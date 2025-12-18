@@ -6,15 +6,16 @@ import requests
 
 # 設定頁面標題
 st.set_page_config(page_title="Miniko AI 戰情室", page_icon="📈", layout="wide")
-st.title("📈 Miniko AI 全台股獵手 (V36.0 權證避險雷達版)")
+st.title("📈 Miniko AI 全台股獵手 (V37.0 擴大搜索+中文顯名版)")
 
-# --- 1. 智慧抓股引擎 (多源頭切換) ---
+# --- 1. 智慧抓股引擎 (擴大至前200名 + 抓取名稱) ---
 @st.cache_data(ttl=1800) # 30分鐘更新一次
 def get_top_volume_stocks():
-    # C 計畫：百大備援名單
-    backup_list = [
-        "2330.TW", "2317.TW", "2603.TW", "2609.TW", "3231.TW", "2357.TW", "3037.TW", "2382.TW", "2303.TW", "2454.TW",
-        "2379.TW", "2356.TW", "2615.TW", "3481.TW", "2409.TW", "2324.TW", "2376.TW", "2301.TW", "3035.TW", "3017.TW",
+    # C 計畫：擴充型備援名單 (含仁寶 2324)
+    # 格式改為字典，方便後續處理
+    backup_codes = [
+        "2330.TW", "2317.TW", "2324.TW", "2603.TW", "2609.TW", "3231.TW", "2357.TW", "3037.TW", "2382.TW", "2303.TW", 
+        "2454.TW", "2379.TW", "2356.TW", "2615.TW", "3481.TW", "2409.TW", "2376.TW", "2301.TW", "3035.TW", "3017.TW",
         "1513.TW", "1519.TW", "1605.TW", "1503.TW", "2515.TW", "2501.TW", "2881.TW", "2882.TW", "2891.TW", "5880.TW",
         "2886.TW", "2892.TW", "1319.TW", "1722.TW", "1795.TW", "4763.TW", "4133.TW", "6446.TW", "6472.TW", "3711.TW",
         "2344.TW", "6770.TW", "3529.TW", "6239.TW", "8069.TWO", "3034.TW", "3532.TW", "3008.TW", "3189.TW", "5347.TWO",
@@ -24,6 +25,8 @@ def get_top_volume_stocks():
         "6147.TWO", "8299.TWO", "3558.TWO", "8064.TWO", "8936.TWO", "1504.TW", "1514.TW", "2002.TW", "2027.TW", "2006.TW",
         "1609.TW", "1603.TW", "2912.TW", "9945.TW", "2618.TW", "2610.TW", "1101.TW", "1102.TW", "1301.TW", "1303.TW"
     ]
+    # 備援名單先不抓名稱(太慢)，後續顯示時再用代號代替
+    backup_list = [{'code': c, 'name': c.replace('.TW', '')} for c in backup_codes]
 
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -31,38 +34,57 @@ def get_top_volume_stocks():
         'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
     }
 
-    # --- 來源 A: 嗨投資 ---
+    # --- 來源 A: 嗨投資 (HiStock) ---
     try:
         url_histock = "https://histock.tw/stock/rank.aspx?p=all" 
         r = requests.get(url_histock, headers=headers, timeout=6)
         dfs = pd.read_html(r.text)
         df = dfs[0]
-        col_name = [c for c in df.columns if '代號' in str(c) or '股票' in str(c)][0]
-        stock_ids = []
-        for item in df[col_name]:
-            code = ''.join([c for c in str(item) if c.isdigit()])
+        
+        # 抓取代號和名稱
+        # 通常欄位是 "代號" 和 "股票" (名稱)
+        col_code = [c for c in df.columns if '代號' in str(c)][0]
+        col_name = [c for c in df.columns if '股票' in str(c) or '名稱' in str(c)][0]
+        
+        stock_list = []
+        for index, row in df.iterrows():
+            code_str = str(row[col_code])
+            name_str = str(row[col_name])
+            
+            # 清理代號
+            code = ''.join([c for c in code_str if c.isdigit()])
             if len(code) == 4:
-                stock_ids.append(f"{code}.TW")
-        if len(stock_ids) > 50:
-            return stock_ids[:100], "✅ 成功抓取 HiStock 熱門榜"
+                stock_list.append({'code': f"{code}.TW", 'name': name_str})
+        
+        if len(stock_list) > 50:
+            # 取前 200 名
+            return stock_list[:200], "✅ 成功抓取 HiStock 熱門榜 (前200大)"
     except Exception:
         pass
 
-    # --- 來源 B: Yahoo ---
+    # --- 來源 B: Yahoo 股市 ---
     try:
         url_yahoo = "https://tw.stock.yahoo.com/rank/volume?exchange=TAI"
         r = requests.get(url_yahoo, headers=headers, timeout=5)
         if "Table" in r.text or "table" in r.text:
             dfs = pd.read_html(r.text)
             df = dfs[0]
+            # Yahoo 的欄位通常是 "股號/名稱" 混在一起，例如 "2330台積電"
             target_col = [c for c in df.columns if '股號' in c or '名稱' in c][0]
-            stock_ids = []
+            
+            stock_list = []
             for item in df[target_col]:
-                code = ''.join([c for c in str(item) if c.isdigit()])
+                item_str = str(item)
+                code = ''.join([c for c in item_str if c.isdigit()])
+                # 名稱就是把數字拿掉
+                name = item_str.replace(code, '').strip()
+                
                 if len(code) == 4:
-                    stock_ids.append(f"{code}.TW")
-            if len(stock_ids) > 10:
-                return stock_ids[:100], "✅ 成功抓取 Yahoo 熱門榜"
+                    if not name: name = code # 萬一沒抓到名稱
+                    stock_list.append({'code': f"{code}.TW", 'name': name})
+            
+            if len(stock_list) > 10:
+                return stock_list[:200], "✅ 成功抓取 Yahoo 熱門榜 (前200大)"
     except Exception:
         pass
 
@@ -152,23 +174,12 @@ def check_miniko_strategy(stock_id, df):
         reason_d = "主力鐵底護盤 (平台整理+連3日買盤)"
 
     # --------------------------------
-    # 條件 E (新功能): 權證/主力大單影子追蹤 (截至12:00)
+    # 條件 E: 權證/主力大單影子追蹤
     # --------------------------------
     condition_e = False
     reason_e = ""
-    
-    # 計算預估當日成交金額 (Turnover)
-    # yfinance Volume 單位通常是股數 (Shares)
     estimated_turnover = today['Close'] * today['Volume']
-    
-    # 邏輯：
-    # 1. 成交金額要夠大 (您說權證做多500萬，通常會帶動現貨成交量破億)
-    #    設定門檻：今日成交金額 > 1億 (確保是大資金戰場)
-    # 2. 股價必須是上漲的 (避險盤是買進，股價會漲)
-    #    漲幅 > 1% (有攻擊意圖)
-    # 3. 爆量攻擊 (比平常量大)
-    
-    is_big_money = estimated_turnover > 100000000 # 1億台幣
+    is_big_money = estimated_turnover > 100000000 # 1億
     is_attacking = today['Close'] > prev['Close'] * 1.01 # 漲幅 > 1%
     
     if is_big_money and is_attacking and is_volume_surge:
@@ -181,7 +192,6 @@ def check_miniko_strategy(stock_id, df):
     reasons = []
     is_red_candle = today['Close'] >= today['Open']
     
-    # 爆量紅K
     if is_volume_surge and is_red_candle:
          reasons.append("【籌碼】爆量紅K (量增>1.8倍)")
     
@@ -195,7 +205,6 @@ def check_miniko_strategy(stock_id, df):
         reasons.append(f"【大戶】🔥{reason_e}")
         
     isValid = False
-    # 只要符合 A, B, D, E 任一項，或者單純爆量紅K，都抓出來
     if condition_a or condition_b or condition_d or condition_e:
         isValid = True
     elif is_volume_surge and is_red_candle:
@@ -208,7 +217,7 @@ def check_miniko_strategy(stock_id, df):
 
 # --- 4. 執行介面 ---
 
-st.info("💡 篩選條件：1.咕嚕咕嚕/盤整  2.SOP  3.爆量紅K  4.主力鐵底  5.權證避險大單(New!)")
+st.info("💡 擴大掃描前200大+仁寶等關注股。策略：咕嚕咕嚕、SOP、爆量、鐵底、權證大單。")
 
 col1, col2 = st.columns([3, 1])
 with col1:
@@ -218,17 +227,21 @@ with col2:
     scan_btn = st.button("🚀 啟動全自動掃描", type="primary")
 
 if scan_btn:
-    with st.spinner("正在連線至交易所獲取即時清單..."):
-        top_stocks, source_msg = get_top_volume_stocks()
+    with st.spinner("正在連線至交易所獲取前 200 大熱門股清單..."):
+        # 這裡取得的是字典列表 [{'code': '2330.TW', 'name': '台積電'}, ...]
+        top_stocks_info, source_msg = get_top_volume_stocks()
     
-    st.caption(f"{source_msg} (本次鎖定 {len(top_stocks)} 檔)")
+    st.caption(f"{source_msg} (本次鎖定 {len(top_stocks_info)} 檔)")
     
     found_stocks = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    for i, stock_id in enumerate(top_stocks):
-        status_text.text(f"正在分析 ({i+1}/{len(top_stocks)}): {stock_id}")
+    for i, stock_info in enumerate(top_stocks_info):
+        stock_id = stock_info['code']
+        stock_name = stock_info['name']
+        
+        status_text.text(f"正在分析 ({i+1}/{len(top_stocks_info)}): {stock_id} {stock_name}")
         
         try:
             data = yf.download(stock_id, period="3mo", progress=False)
@@ -249,6 +262,7 @@ if scan_btn:
                     
                     found_stocks.append({
                         "代號": stock_id,
+                        "名稱": stock_name,
                         "現價": f"{latest_price:.2f} ({color_icon} {pct_change:.1f}%)",
                         "成交量": f"{int(vol)}張",
                         "入選理由": reason
@@ -256,12 +270,12 @@ if scan_btn:
         except Exception:
             continue
             
-        progress_bar.progress((i + 1) / len(top_stocks))
+        progress_bar.progress((i + 1) / len(top_stocks_info))
     
     status_text.text("掃描完成！")
     
     if found_stocks:
-        st.success(f"🎉 發現 {len(found_stocks)} 檔符合條件的潛力股！")
+        st.success(f"🎉 發現 {len(found_stocks)} 檔潛力股！(含中文名稱)")
         st.dataframe(pd.DataFrame(found_stocks), use_container_width=True)
     else:
         st.warning("太嚴格了？目前清單中，沒有發現符合條件的標的。")
