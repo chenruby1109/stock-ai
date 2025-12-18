@@ -2,3 +2,8 @@ streamlit
 pandas
 requests
 scipy
+streamlit
+yfinance
+pandas
+scipy
+numpy
