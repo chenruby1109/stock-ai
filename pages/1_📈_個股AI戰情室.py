@@ -6,12 +6,12 @@ import requests
 
 # 設定頁面標題
 st.set_page_config(page_title="Miniko AI 戰情室", page_icon="📈", layout="wide")
-st.title("📈 Miniko AI 全台股獵手 (V38.0 流動性守門員版)")
+st.title("📈 Miniko AI 全台股獵手 (V39.0 權證大戶+主力連買版)")
 
-# --- 1. 智慧抓股引擎 (優化爬蟲來源，鎖定成交量) ---
+# --- 1. 智慧抓股引擎 (擴大至前200名 + 抓取名稱) ---
 @st.cache_data(ttl=1800)
 def get_top_volume_stocks():
-    # C 計畫：權值與熱門股備援 (字典格式)
+    # 備援名單 (含仁寶 2324)
     backup_codes = [
         "2330.TW", "2317.TW", "2324.TW", "2603.TW", "2609.TW", "3231.TW", "2357.TW", "3037.TW", "2382.TW", "2303.TW", 
         "2454.TW", "2379.TW", "2356.TW", "2615.TW", "3481.TW", "2409.TW", "2376.TW", "2301.TW", "3035.TW", "3017.TW",
@@ -30,9 +30,7 @@ def get_top_volume_stocks():
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
 
-    # --- 來源 A: HiStock (嘗試抓取成交量排行) ---
     try:
-        # 修改 URL 參數，嘗試鎖定 Volume (這裡使用預設排行，後續用過濾器篩選)
         url_histock = "https://histock.tw/stock/rank.aspx?p=all" 
         r = requests.get(url_histock, headers=headers, timeout=6)
         dfs = pd.read_html(r.text)
@@ -48,13 +46,11 @@ def get_top_volume_stocks():
             if len(code) == 4:
                 stock_list.append({'code': f"{code}.TW", 'name': name})
         
-        # 抓多一點回來篩選
         if len(stock_list) > 50:
-            return stock_list[:200], "✅ 成功抓取熱門榜 (將執行嚴格量能過濾)"
+            return stock_list[:200], "✅ 成功抓取前200大熱門股 (將執行嚴格過濾)"
     except Exception:
         pass
 
-    # --- 來源 B: Yahoo ---
     try:
         url_yahoo = "https://tw.stock.yahoo.com/rank/volume?exchange=TAI"
         r = requests.get(url_yahoo, headers=headers, timeout=5)
@@ -62,7 +58,6 @@ def get_top_volume_stocks():
             dfs = pd.read_html(r.text)
             df = dfs[0]
             target_col = [c for c in df.columns if '股號' in c or '名稱' in c][0]
-            
             stock_list = []
             for item in df[target_col]:
                 item_str = str(item)
@@ -71,13 +66,12 @@ def get_top_volume_stocks():
                 if len(code) == 4:
                     if not name: name = code
                     stock_list.append({'code': f"{code}.TW", 'name': name})
-            
             if len(stock_list) > 10:
-                return stock_list[:200], "✅ 成功抓取 Yahoo 成交量榜"
+                return stock_list[:200], "✅ 成功抓取 Yahoo 熱門榜"
     except Exception:
         pass
 
-    return backup_list, "⚠️ 外部連線受阻，啟用「百大權值+熱門股」備援名單"
+    return backup_list, "⚠️ 外部連線受阻，啟用備援名單"
 
 # --- 2. 技術指標計算 ---
 def calculate_indicators(df):
@@ -97,22 +91,16 @@ def calculate_indicators(df):
     df['MA20'] = df['Close'].rolling(20).mean()
     return df
 
-# --- 3. 核心策略邏輯 (新增流動性門神) ---
+# --- 3. 核心策略邏輯 ---
 def check_miniko_strategy(stock_id, df):
     if len(df) < 30: return False, "資料不足"
 
     today = df.iloc[-1]
     prev = df.iloc[-2]
 
-    # 🔥【門神檢查】🔥 
-    # yfinance 的 Volume 單位是「股」。1000張 = 1,000,000 股。
-    # 如果成交量小於 1000 張，直接淘汰，不管指標多好都不要。
-    # 例外：如果股價 > 500元 (高價股)，成交量門檻降低至 500 張。
-    
-    min_volume_threshold = 1000000 # 預設 1000 張
-    if today['Close'] > 500:
-        min_volume_threshold = 500000 # 高價股 500 張即可
-        
+    # 🔥【門神檢查】成交量 < 1000 張直接淘汰 🔥
+    min_volume_threshold = 1000000 
+    if today['Close'] > 500: min_volume_threshold = 500000 
     if today['Volume'] < min_volume_threshold:
         return False, "成交量不足 (剔除冷門股)"
     
@@ -156,36 +144,61 @@ def check_miniko_strategy(stock_id, df):
         condition_b = True
     
     # --------------------------------
-    # 條件 D: 主力鐵底連買
+    # 條件 D: 主力連買 (連續 3-5 天)
     # --------------------------------
     condition_d = False
     reason_d = ""
-    recent_high_10 = df['High'].rolling(10).max().iloc[-1]
-    recent_low_10 = df['Low'].rolling(10).min().iloc[-1]
-    if recent_low_10 == 0: recent_low_10 = 0.01
-    box_range = (recent_high_10 - recent_low_10) / recent_low_10
     
+    # 檢查最近 5 天的資料
+    last_5_days = df.iloc[-5:]
+    last_4_days = df.iloc[-4:]
     last_3_days = df.iloc[-3:]
-    three_red_soldiers = all(last_3_days['Close'] >= last_3_days['Open'])
-    three_days_up = (df['Close'].iloc[-1] >= df['Close'].iloc[-2]) and \
-                    (df['Close'].iloc[-2] >= df['Close'].iloc[-3])
     
-    if (box_range < 0.06) and (three_red_soldiers or three_days_up):
+    # 定義「買進」：收盤 >= 開盤 (紅K) 或者 收盤 > 昨收 (股價漲)
+    # 只要符合其中一種型態的連買即可
+    
+    # 檢查連5
+    is_5_red = all(last_5_days['Close'] >= last_5_days['Open'])
+    is_5_up = all(last_5_days['Close'] > last_5_days['Close'].shift(1).dropna())
+    
+    # 檢查連4
+    is_4_red = all(last_4_days['Close'] >= last_4_days['Open'])
+    is_4_up = all(last_4_days['Close'] > last_4_days['Close'].shift(1).dropna())
+    
+    # 檢查連3
+    is_3_red = all(last_3_days['Close'] >= last_3_days['Open'])
+    is_3_up = all(last_3_days['Close'] > last_3_days['Close'].shift(1).dropna())
+    
+    if (is_5_red or is_5_up):
         condition_d = True
-        reason_d = "主力鐵底護盤 (平台整理+連3日買盤)"
+        reason_d = "關鍵主力連續買超 (5日連買)"
+    elif (is_4_red or is_4_up):
+        condition_d = True
+        reason_d = "關鍵主力連續買超 (4日連買)"
+    elif (is_3_red or is_3_up):
+        condition_d = True
+        reason_d = "關鍵主力連續買超 (3日連買)"
 
     # --------------------------------
-    # 條件 E: 權證/主力大單
+    # 條件 E: 權證做多 500萬 (影子追蹤)
     # --------------------------------
     condition_e = False
     reason_e = ""
+    
+    # 邏輯：
+    # 1. 權證做多 500 萬 -> 預估券商避險買入現貨約 2000-3000 萬
+    #    設定當日成交金額門檻 > 30,000,000 (3千萬)
+    # 2. 必須是攻擊盤 (股價 > 昨收 1%)
+    # 3. 12:00前發生? 我們假設若目前總量夠大且爆量，就是盤中發生
+    
     estimated_turnover = today['Close'] * today['Volume']
-    is_big_money = estimated_turnover > 100000000 # 1億
+    
+    is_big_warrant_hedge = estimated_turnover > 30000000 # 3千萬門檻 (對應權證500萬)
     is_attacking = today['Close'] > prev['Close'] * 1.01 # 漲幅 > 1%
     
-    if is_big_money and is_attacking and is_volume_surge:
+    if is_big_warrant_hedge and is_attacking and is_volume_surge:
         condition_e = True
-        reason_e = "疑似權證/主力大單進駐 (爆量攻擊且金額大)"
+        reason_e = "符合權證大戶進場特徵 (估計權證>500萬)"
 
     # --------------------------------
     # 綜合決策
@@ -203,7 +216,7 @@ def check_miniko_strategy(stock_id, df):
     if condition_d:
         reasons.append(f"【主力】{reason_d}")
     if condition_e:
-        reasons.append(f"【大戶】🔥{reason_e}")
+        reasons.append(f"【權證】🔥{reason_e}")
         
     isValid = False
     if condition_a or condition_b or condition_d or condition_e:
@@ -218,7 +231,7 @@ def check_miniko_strategy(stock_id, df):
 
 # --- 4. 執行介面 ---
 
-st.info("💡 系統已開啟「流動性門神」：成交量 < 1000 張的冷門股將自動過濾。")
+st.info("💡 策略啟動：1.咕嚕咕嚕/盤整  2.SOP  3.爆量紅K  4.主力連買(3-5日)  5.權證大戶(>500萬)")
 
 col1, col2 = st.columns([3, 1])
 with col1:
@@ -228,10 +241,10 @@ with col2:
     scan_btn = st.button("🚀 啟動全自動掃描", type="primary")
 
 if scan_btn:
-    with st.spinner("正在獲取熱門股清單並剔除冷門股..."):
+    with st.spinner("正在獲取熱門股 (前200大) 並剔除冷門股..."):
         top_stocks_info, source_msg = get_top_volume_stocks()
     
-    st.caption(f"{source_msg} (初始獲取 {len(top_stocks_info)} 檔)")
+    st.caption(f"{source_msg} (掃描範圍: {len(top_stocks_info)} 檔)")
     
     found_stocks = []
     progress_bar = st.progress(0)
@@ -275,7 +288,7 @@ if scan_btn:
     status_text.text("掃描完成！")
     
     if found_stocks:
-        st.success(f"🎉 發現 {len(found_stocks)} 檔真正的熱門潛力股！")
+        st.success(f"🎉 發現 {len(found_stocks)} 檔符合條件的潛力股！(含主力連買 & 權證大戶)")
         st.dataframe(pd.DataFrame(found_stocks), use_container_width=True)
     else:
         st.warning("太嚴格了？目前熱門股中，沒有發現符合條件的標的。")
