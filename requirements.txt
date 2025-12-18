@@ -7,3 +7,9 @@ yfinance
 pandas
 scipy
 numpy
+streamlit
+yfinance
+pandas
+requests
+scipy
+numpy
