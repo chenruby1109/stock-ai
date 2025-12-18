@@ -6,87 +6,84 @@ import requests
 
 # 設定頁面標題
 st.set_page_config(page_title="Miniko AI 戰情室", page_icon="📈", layout="wide")
-st.title("📈 Miniko AI 全台股獵手 (V34.0 百大備援版)")
+st.title("📈 Miniko AI 全台股獵手 (V36.0 權證避險雷達版)")
 
-# --- 1. 智慧抓股引擎 (含 100 檔擴充名單) ---
-@st.cache_data(ttl=3600)
+# --- 1. 智慧抓股引擎 (多源頭切換) ---
+@st.cache_data(ttl=1800) # 30分鐘更新一次
 def get_top_volume_stocks():
-    # B 計畫：擴充至 100 檔權值與熱門股，確保連線受阻時仍有充足標的
+    # C 計畫：百大備援名單
     backup_list = [
-        # --- 半導體 & 電子權值 ---
-        "2330.TW", "2317.TW", "2454.TW", "2303.TW", "2308.TW", "3711.TW", "3034.TW", "2379.TW", "3661.TW", "3443.TW",
-        "2344.TW", "2408.TW", "2337.TW", "6770.TW", "8016.TW", "8299.TWO", "6488.TWO", "5483.TWO", "3105.TWO", "3035.TW",
-        # --- AI 伺服器 & 電腦週邊 ---
-        "2382.TW", "3231.TW", "2357.TW", "6669.TW", "2356.TW", "2301.TW", "4938.TW", "2353.TW", "2324.TW", "2376.TW",
-        "2377.TW", "3017.TW", "6239.TW", "3013.TW", "8114.TW", "3324.TWO",
-        # --- PCB & 網通 & 零組件 ---
-        "3037.TW", "2313.TW", "8046.TW", "3189.TW", "2368.TW", "2449.TW", "6271.TW", "2492.TW", "3044.TW", "5347.TWO",
-        "2455.TW", "6278.TW", "4958.TW", "9802.TW",
-        # --- 面板 & 光電 ---
-        "2409.TW", "3481.TW", "3008.TW",
-        # --- 航運 & 航空 ---
-        "2603.TW", "2609.TW", "2615.TW", "2610.TW", "2618.TW", "2637.TW", "2606.TW", "2605.TW",
-        # --- 金融 & 壽險 ---
-        "2881.TW", "2882.TW", "2891.TW", "2886.TW", "2884.TW", "2885.TW", "2892.TW", "5880.TW", "2880.TW", "2883.TW",
-        "2887.TW", "2890.TW", "5871.TW", "2801.TW", "2834.TW", "2888.TW",
-        # --- 重電 & 綠能 & 線纜 ---
-        "1503.TW", "1504.TW", "1513.TW", "1519.TW", "1605.TW", "1609.TW", "6806.TW", "9958.TW",
-        # --- 傳產龍頭 (塑化/鋼鐵/水泥/汽車) ---
-        "1101.TW", "1102.TW", "1216.TW", "1301.TW", "1303.TW", "1326.TW", "1402.TW", "2002.TW", "2014.TW", "2027.TW",
-        "2201.TW", "2207.TW", "2105.TW", "2912.TW", "9910.TW", "9904.TW", "9945.TW",
-        # --- 電信 ---
-        "2412.TW", "3045.TW", "4904.TW"
+        "2330.TW", "2317.TW", "2603.TW", "2609.TW", "3231.TW", "2357.TW", "3037.TW", "2382.TW", "2303.TW", "2454.TW",
+        "2379.TW", "2356.TW", "2615.TW", "3481.TW", "2409.TW", "2324.TW", "2376.TW", "2301.TW", "3035.TW", "3017.TW",
+        "1513.TW", "1519.TW", "1605.TW", "1503.TW", "2515.TW", "2501.TW", "2881.TW", "2882.TW", "2891.TW", "5880.TW",
+        "2886.TW", "2892.TW", "1319.TW", "1722.TW", "1795.TW", "4763.TW", "4133.TW", "6446.TW", "6472.TW", "3711.TW",
+        "2344.TW", "6770.TW", "3529.TW", "6239.TW", "8069.TWO", "3034.TW", "3532.TW", "3008.TW", "3189.TW", "5347.TWO",
+        "3260.TWO", "6180.TWO", "8046.TW", "2449.TW", "6189.TW", "6278.TW", "4968.TW", "4961.TW", "2498.TW", "2368.TW",
+        "2313.TW", "2312.TW", "2367.TW", "6213.TW", "3044.TW", "3019.TW", "2408.TW", "3443.TW", "3661.TW", "6669.TW",
+        "3036.TW", "2383.TW", "2323.TW", "2404.TW", "2455.TW", "3583.TW", "4906.TW", "5269.TW", "5483.TWO", "6488.TWO",
+        "6147.TWO", "8299.TWO", "3558.TWO", "8064.TWO", "8936.TWO", "1504.TW", "1514.TW", "2002.TW", "2027.TW", "2006.TW",
+        "1609.TW", "1603.TW", "2912.TW", "9945.TW", "2618.TW", "2610.TW", "1101.TW", "1102.TW", "1301.TW", "1303.TW"
     ]
-    
-    try:
-        url = "https://tw.stock.yahoo.com/rank/volume?exchange=TAI"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        r = requests.get(url, headers=headers, timeout=5)
-        
-        if "Table" not in r.text and "table" not in r.text:
-            raise ValueError("Blocked")
 
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.google.com/',
+        'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
+    }
+
+    # --- 來源 A: 嗨投資 ---
+    try:
+        url_histock = "https://histock.tw/stock/rank.aspx?p=all" 
+        r = requests.get(url_histock, headers=headers, timeout=6)
         dfs = pd.read_html(r.text)
         df = dfs[0]
-        
-        target_col = [c for c in df.columns if '股號' in c or '名稱' in c][0]
+        col_name = [c for c in df.columns if '代號' in str(c) or '股票' in str(c)][0]
         stock_ids = []
-        for item in df[target_col]:
+        for item in df[col_name]:
             code = ''.join([c for c in str(item) if c.isdigit()])
             if len(code) == 4:
                 stock_ids.append(f"{code}.TW")
-        
-        # 這裡改為：如果抓到的少於 10 檔，就用備援；如果成功抓到，就用抓到的
-        if len(stock_ids) > 10:
-            return stock_ids[:100], "✅ 成功抓取 Yahoo 即時榜單"
-        else:
-            return backup_list, "⚠️ 抓取數量過少，啟用百大備援名單"
-
+        if len(stock_ids) > 50:
+            return stock_ids[:100], "✅ 成功抓取 HiStock 熱門榜"
     except Exception:
-        return backup_list, "⚠️ 交易所連線受阻，已啟用「百大權值+熱門股」備援名單"
+        pass
+
+    # --- 來源 B: Yahoo ---
+    try:
+        url_yahoo = "https://tw.stock.yahoo.com/rank/volume?exchange=TAI"
+        r = requests.get(url_yahoo, headers=headers, timeout=5)
+        if "Table" in r.text or "table" in r.text:
+            dfs = pd.read_html(r.text)
+            df = dfs[0]
+            target_col = [c for c in df.columns if '股號' in c or '名稱' in c][0]
+            stock_ids = []
+            for item in df[target_col]:
+                code = ''.join([c for c in str(item) if c.isdigit()])
+                if len(code) == 4:
+                    stock_ids.append(f"{code}.TW")
+            if len(stock_ids) > 10:
+                return stock_ids[:100], "✅ 成功抓取 Yahoo 熱門榜"
+    except Exception:
+        pass
+
+    return backup_list, "⚠️ 外部連線受阻，啟用「百大權值+熱門股」備援名單"
 
 # --- 2. 技術指標計算 ---
 def calculate_indicators(df):
-    # KD
     df['Low_9'] = df['Low'].rolling(9).min()
     df['High_9'] = df['High'].rolling(9).max()
     df['RSV'] = (df['Close'] - df['Low_9']) / (df['High_9'] - df['Low_9']) * 100
     df['K'] = df['RSV'].ewm(com=2).mean()
     df['D'] = df['K'].ewm(com=2).mean()
     
-    # MACD
     exp12 = df['Close'].ewm(span=12, adjust=False).mean()
     exp26 = df['Close'].ewm(span=26, adjust=False).mean()
     df['DIF'] = exp12 - exp26
     df['MACD'] = df['DIF'].ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = df['DIF'] - df['MACD']
     
-    # 均線
     df['MA5'] = df['Close'].rolling(5).mean()
     df['MA20'] = df['Close'].rolling(20).mean()
-    
     return df
 
 # --- 3. 核心策略邏輯 ---
@@ -96,50 +93,53 @@ def check_miniko_strategy(stock_id, df):
     today = df.iloc[-1]
     prev = df.iloc[-2]
     
-    # --- 條件 0: 爆量檢查 ---
+    # --------------------------------
+    # 條件 0: 爆量檢查
+    # --------------------------------
     vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
     if vol_ma5 == 0: vol_ma5 = 1
     is_volume_surge = today['Volume'] > (vol_ma5 * 1.8)
     
-    # --- 條件 A: 嚴格版咕嚕咕嚕 ---
+    # --------------------------------
+    # 條件 A: 嚴格版咕嚕咕嚕
+    # --------------------------------
     condition_a = False
     reason_a = ""
-    
     kd_low_zone = today['K'] < 50 
     k_hook_up = (today['K'] > prev['K']) or (today['K'] > today['D'])
     price_stable = today['Close'] > today['MA5']
     macd_improving = today['MACD_Hist'] > prev['MACD_Hist']
-    
     if kd_low_zone and k_hook_up and price_stable and macd_improving:
         condition_a = True
         reason_a = "底部咕嚕咕嚕 (KD勾頭+站上5日線+能量增強)"
 
-    # --- 條件 B: 嚴格版高檔強勢整理 ---
+    # --------------------------------
+    # 條件 B: 高檔強勢整理
+    # --------------------------------
     max_k_recent = df['K'].rolling(10).max().iloc[-1]
     price_change_5d = (today['Close'] - df['Close'].iloc[-6]) / df['Close'].iloc[-6]
-    
     if (max_k_recent > 70) and (40 <= today['K'] <= 60) and (abs(price_change_5d) < 0.04):
         condition_a = True
         reason_a = "高檔強勢整理 (KD修正但價穩)"
 
-    # --- 條件 C: SOP (MACD翻紅+趨勢多+KD金叉) ---
+    # --------------------------------
+    # 條件 C: SOP (MACD+Trend+KD)
+    # --------------------------------
     condition_b = False
     macd_flip = (prev['MACD_Hist'] < 0) and (today['MACD_Hist'] > 0)
     trend_bull = today['Close'] > df['MA20'].iloc[-1] 
     kd_cross = (prev['K'] < prev['D']) and (today['K'] > today['D'])
-    
     if macd_flip and trend_bull and kd_cross:
         condition_b = True
     
-    # --- 條件 D: 主力鐵底連買 (新功能) ---
+    # --------------------------------
+    # 條件 D: 主力鐵底連買
+    # --------------------------------
     condition_d = False
     reason_d = ""
-    
     recent_high_10 = df['High'].rolling(10).max().iloc[-1]
     recent_low_10 = df['Low'].rolling(10).min().iloc[-1]
-    # 避免除以0
     if recent_low_10 == 0: recent_low_10 = 0.01
-    
     box_range = (recent_high_10 - recent_low_10) / recent_low_10
     
     last_3_days = df.iloc[-3:]
@@ -147,15 +147,41 @@ def check_miniko_strategy(stock_id, df):
     three_days_up = (df['Close'].iloc[-1] >= df['Close'].iloc[-2]) and \
                     (df['Close'].iloc[-2] >= df['Close'].iloc[-3])
     
-    # 震幅小於 6% 且 (連三紅 或 連三漲)
     if (box_range < 0.06) and (three_red_soldiers or three_days_up):
         condition_d = True
         reason_d = "主力鐵底護盤 (平台整理+連3日買盤)"
 
-    # --- 綜合決策 ---
+    # --------------------------------
+    # 條件 E (新功能): 權證/主力大單影子追蹤 (截至12:00)
+    # --------------------------------
+    condition_e = False
+    reason_e = ""
+    
+    # 計算預估當日成交金額 (Turnover)
+    # yfinance Volume 單位通常是股數 (Shares)
+    estimated_turnover = today['Close'] * today['Volume']
+    
+    # 邏輯：
+    # 1. 成交金額要夠大 (您說權證做多500萬，通常會帶動現貨成交量破億)
+    #    設定門檻：今日成交金額 > 1億 (確保是大資金戰場)
+    # 2. 股價必須是上漲的 (避險盤是買進，股價會漲)
+    #    漲幅 > 1% (有攻擊意圖)
+    # 3. 爆量攻擊 (比平常量大)
+    
+    is_big_money = estimated_turnover > 100000000 # 1億台幣
+    is_attacking = today['Close'] > prev['Close'] * 1.01 # 漲幅 > 1%
+    
+    if is_big_money and is_attacking and is_volume_surge:
+        condition_e = True
+        reason_e = "疑似權證/主力大單進駐 (爆量攻擊且金額大)"
+
+    # --------------------------------
+    # 綜合決策
+    # --------------------------------
     reasons = []
     is_red_candle = today['Close'] >= today['Open']
     
+    # 爆量紅K
     if is_volume_surge and is_red_candle:
          reasons.append("【籌碼】爆量紅K (量增>1.8倍)")
     
@@ -165,9 +191,12 @@ def check_miniko_strategy(stock_id, df):
         reasons.append("【訊號】SOP買點 (MACD翻紅+KD金叉)")
     if condition_d:
         reasons.append(f"【主力】{reason_d}")
+    if condition_e:
+        reasons.append(f"【大戶】🔥{reason_e}")
         
     isValid = False
-    if condition_a or condition_b or condition_d:
+    # 只要符合 A, B, D, E 任一項，或者單純爆量紅K，都抓出來
+    if condition_a or condition_b or condition_d or condition_e:
         isValid = True
     elif is_volume_surge and is_red_candle:
         isValid = True
@@ -179,7 +208,7 @@ def check_miniko_strategy(stock_id, df):
 
 # --- 4. 執行介面 ---
 
-st.info("💡 系統條件：1. 咕嚕咕嚕/高檔整理  2. SOP  3. 爆量紅K  4. 主力鐵底護盤")
+st.info("💡 篩選條件：1.咕嚕咕嚕/盤整  2.SOP  3.爆量紅K  4.主力鐵底  5.權證避險大單(New!)")
 
 col1, col2 = st.columns([3, 1])
 with col1:
@@ -189,11 +218,10 @@ with col2:
     scan_btn = st.button("🚀 啟動全自動掃描", type="primary")
 
 if scan_btn:
-    # 顯示目前使用的名單來源
-    with st.spinner("正在獲取股票清單..."):
+    with st.spinner("正在連線至交易所獲取即時清單..."):
         top_stocks, source_msg = get_top_volume_stocks()
     
-    st.caption(f"{source_msg} (共 {len(top_stocks)} 檔)")
+    st.caption(f"{source_msg} (本次鎖定 {len(top_stocks)} 檔)")
     
     found_stocks = []
     progress_bar = st.progress(0)
