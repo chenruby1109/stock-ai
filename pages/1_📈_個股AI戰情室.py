@@ -6,13 +6,12 @@ import requests
 
 # 設定頁面標題
 st.set_page_config(page_title="Miniko AI 戰情室", page_icon="📈", layout="wide")
-st.title("📈 Miniko AI 全台股獵手 (V37.0 擴大搜索+中文顯名版)")
+st.title("📈 Miniko AI 全台股獵手 (V38.0 流動性守門員版)")
 
-# --- 1. 智慧抓股引擎 (擴大至前200名 + 抓取名稱) ---
-@st.cache_data(ttl=1800) # 30分鐘更新一次
+# --- 1. 智慧抓股引擎 (優化爬蟲來源，鎖定成交量) ---
+@st.cache_data(ttl=1800)
 def get_top_volume_stocks():
-    # C 計畫：擴充型備援名單 (含仁寶 2324)
-    # 格式改為字典，方便後續處理
+    # C 計畫：權值與熱門股備援 (字典格式)
     backup_codes = [
         "2330.TW", "2317.TW", "2324.TW", "2603.TW", "2609.TW", "3231.TW", "2357.TW", "3037.TW", "2382.TW", "2303.TW", 
         "2454.TW", "2379.TW", "2356.TW", "2615.TW", "3481.TW", "2409.TW", "2376.TW", "2301.TW", "3035.TW", "3017.TW",
@@ -25,66 +24,56 @@ def get_top_volume_stocks():
         "6147.TWO", "8299.TWO", "3558.TWO", "8064.TWO", "8936.TWO", "1504.TW", "1514.TW", "2002.TW", "2027.TW", "2006.TW",
         "1609.TW", "1603.TW", "2912.TW", "9945.TW", "2618.TW", "2610.TW", "1101.TW", "1102.TW", "1301.TW", "1303.TW"
     ]
-    # 備援名單先不抓名稱(太慢)，後續顯示時再用代號代替
     backup_list = [{'code': c, 'name': c.replace('.TW', '')} for c in backup_codes]
 
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.google.com/',
-        'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
     }
 
-    # --- 來源 A: 嗨投資 (HiStock) ---
+    # --- 來源 A: HiStock (嘗試抓取成交量排行) ---
     try:
+        # 修改 URL 參數，嘗試鎖定 Volume (這裡使用預設排行，後續用過濾器篩選)
         url_histock = "https://histock.tw/stock/rank.aspx?p=all" 
         r = requests.get(url_histock, headers=headers, timeout=6)
         dfs = pd.read_html(r.text)
         df = dfs[0]
         
-        # 抓取代號和名稱
-        # 通常欄位是 "代號" 和 "股票" (名稱)
         col_code = [c for c in df.columns if '代號' in str(c)][0]
         col_name = [c for c in df.columns if '股票' in str(c) or '名稱' in str(c)][0]
         
         stock_list = []
         for index, row in df.iterrows():
-            code_str = str(row[col_code])
-            name_str = str(row[col_name])
-            
-            # 清理代號
-            code = ''.join([c for c in code_str if c.isdigit()])
+            code = ''.join([c for c in str(row[col_code]) if c.isdigit()])
+            name = str(row[col_name])
             if len(code) == 4:
-                stock_list.append({'code': f"{code}.TW", 'name': name_str})
+                stock_list.append({'code': f"{code}.TW", 'name': name})
         
+        # 抓多一點回來篩選
         if len(stock_list) > 50:
-            # 取前 200 名
-            return stock_list[:200], "✅ 成功抓取 HiStock 熱門榜 (前200大)"
+            return stock_list[:200], "✅ 成功抓取熱門榜 (將執行嚴格量能過濾)"
     except Exception:
         pass
 
-    # --- 來源 B: Yahoo 股市 ---
+    # --- 來源 B: Yahoo ---
     try:
         url_yahoo = "https://tw.stock.yahoo.com/rank/volume?exchange=TAI"
         r = requests.get(url_yahoo, headers=headers, timeout=5)
         if "Table" in r.text or "table" in r.text:
             dfs = pd.read_html(r.text)
             df = dfs[0]
-            # Yahoo 的欄位通常是 "股號/名稱" 混在一起，例如 "2330台積電"
             target_col = [c for c in df.columns if '股號' in c or '名稱' in c][0]
             
             stock_list = []
             for item in df[target_col]:
                 item_str = str(item)
                 code = ''.join([c for c in item_str if c.isdigit()])
-                # 名稱就是把數字拿掉
                 name = item_str.replace(code, '').strip()
-                
                 if len(code) == 4:
-                    if not name: name = code # 萬一沒抓到名稱
+                    if not name: name = code
                     stock_list.append({'code': f"{code}.TW", 'name': name})
             
             if len(stock_list) > 10:
-                return stock_list[:200], "✅ 成功抓取 Yahoo 熱門榜 (前200大)"
+                return stock_list[:200], "✅ 成功抓取 Yahoo 成交量榜"
     except Exception:
         pass
 
@@ -108,12 +97,24 @@ def calculate_indicators(df):
     df['MA20'] = df['Close'].rolling(20).mean()
     return df
 
-# --- 3. 核心策略邏輯 ---
+# --- 3. 核心策略邏輯 (新增流動性門神) ---
 def check_miniko_strategy(stock_id, df):
     if len(df) < 30: return False, "資料不足"
 
     today = df.iloc[-1]
     prev = df.iloc[-2]
+
+    # 🔥【門神檢查】🔥 
+    # yfinance 的 Volume 單位是「股」。1000張 = 1,000,000 股。
+    # 如果成交量小於 1000 張，直接淘汰，不管指標多好都不要。
+    # 例外：如果股價 > 500元 (高價股)，成交量門檻降低至 500 張。
+    
+    min_volume_threshold = 1000000 # 預設 1000 張
+    if today['Close'] > 500:
+        min_volume_threshold = 500000 # 高價股 500 張即可
+        
+    if today['Volume'] < min_volume_threshold:
+        return False, "成交量不足 (剔除冷門股)"
     
     # --------------------------------
     # 條件 0: 爆量檢查
@@ -174,7 +175,7 @@ def check_miniko_strategy(stock_id, df):
         reason_d = "主力鐵底護盤 (平台整理+連3日買盤)"
 
     # --------------------------------
-    # 條件 E: 權證/主力大單影子追蹤
+    # 條件 E: 權證/主力大單
     # --------------------------------
     condition_e = False
     reason_e = ""
@@ -217,7 +218,7 @@ def check_miniko_strategy(stock_id, df):
 
 # --- 4. 執行介面 ---
 
-st.info("💡 擴大掃描前200大+仁寶等關注股。策略：咕嚕咕嚕、SOP、爆量、鐵底、權證大單。")
+st.info("💡 系統已開啟「流動性門神」：成交量 < 1000 張的冷門股將自動過濾。")
 
 col1, col2 = st.columns([3, 1])
 with col1:
@@ -227,11 +228,10 @@ with col2:
     scan_btn = st.button("🚀 啟動全自動掃描", type="primary")
 
 if scan_btn:
-    with st.spinner("正在連線至交易所獲取前 200 大熱門股清單..."):
-        # 這裡取得的是字典列表 [{'code': '2330.TW', 'name': '台積電'}, ...]
+    with st.spinner("正在獲取熱門股清單並剔除冷門股..."):
         top_stocks_info, source_msg = get_top_volume_stocks()
     
-    st.caption(f"{source_msg} (本次鎖定 {len(top_stocks_info)} 檔)")
+    st.caption(f"{source_msg} (初始獲取 {len(top_stocks_info)} 檔)")
     
     found_stocks = []
     progress_bar = st.progress(0)
@@ -275,7 +275,7 @@ if scan_btn:
     status_text.text("掃描完成！")
     
     if found_stocks:
-        st.success(f"🎉 發現 {len(found_stocks)} 檔潛力股！(含中文名稱)")
+        st.success(f"🎉 發現 {len(found_stocks)} 檔真正的熱門潛力股！")
         st.dataframe(pd.DataFrame(found_stocks), use_container_width=True)
     else:
-        st.warning("太嚴格了？目前清單中，沒有發現符合條件的標的。")
+        st.warning("太嚴格了？目前熱門股中，沒有發現符合條件的標的。")
