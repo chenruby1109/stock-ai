@@ -6,13 +6,12 @@ import requests
 
 # 設定頁面標題
 st.set_page_config(page_title="Miniko AI 戰情室", page_icon="📈", layout="wide")
-st.title("📈 Miniko AI 全台股獵手 (V32.0 永不斷線版)")
+st.title("📈 Miniko AI 全台股獵手 (V33.0 主力鐵底版)")
 
 # --- 1. 智慧抓股引擎 (含自動備援機制) ---
 @st.cache_data(ttl=3600)
 def get_top_volume_stocks():
-    # 定義 B 計畫名單：台灣50 + 中型100 成分股 (涵蓋市場最熱門標的)
-    # 這是為了防止 Yahoo 阻擋爬蟲時，系統還能運作
+    # B 計畫備援名單
     backup_list = [
         "2330.TW", "2317.TW", "2454.TW", "2308.TW", "2303.TW", "2603.TW", "2609.TW", "2615.TW", 
         "2382.TW", "2357.TW", "3231.TW", "2379.TW", "2345.TW", "3037.TW", "2356.TW", "2353.TW",
@@ -24,22 +23,19 @@ def get_top_volume_stocks():
     ]
     
     try:
-        # 嘗試去抓 Yahoo 排行榜
         url = "https://tw.stock.yahoo.com/rank/volume?exchange=TAI"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         r = requests.get(url, headers=headers, timeout=5)
         
-        # 檢查是否被擋
+        # 簡單檢查
         if "Table" not in r.text and "table" not in r.text:
-            raise ValueError("Yahoo blocked the request")
+            raise ValueError("Blocked")
 
         dfs = pd.read_html(r.text)
         df = dfs[0]
         
-        # 找出正確欄位
         target_col = [c for c in df.columns if '股號' in c or '名稱' in c][0]
         stock_ids = []
         for item in df[target_col]:
@@ -48,13 +44,12 @@ def get_top_volume_stocks():
                 stock_ids.append(f"{code}.TW")
         
         if len(stock_ids) > 10:
-            return stock_ids[:100], "✅ 成功抓取 Yahoo 即時成交量榜單"
+            return stock_ids[:100], "✅ 成功抓取 Yahoo 即時榜單"
         else:
-            return backup_list, "⚠️ 抓取數量過少，已切換至備援熱門股名單"
+            return backup_list, "⚠️ 抓取數量過少，啟用備援名單"
 
-    except Exception as e:
-        # 只要失敗，直接回傳備用名單，不顯示錯誤給使用者，保持體驗流暢
-        return backup_list, "⚠️ 交易所連線受阻，已自動切換至「權值+熱門股」備援名單"
+    except Exception:
+        return backup_list, "⚠️ 交易所連線受阻，已啟用「權值+熱門股」備援名單"
 
 # --- 2. 技術指標計算 ---
 def calculate_indicators(df):
@@ -78,43 +73,48 @@ def calculate_indicators(df):
     
     return df
 
-# --- 3. 核心策略邏輯 (保留您要的嚴格版) ---
+# --- 3. 核心策略邏輯 ---
 def check_miniko_strategy(stock_id, df):
     if len(df) < 30: return False, "資料不足"
 
     today = df.iloc[-1]
     prev = df.iloc[-2]
     
-    # 爆量檢查 (1.8倍)
+    # ----------------------------------------
+    # 條件 0: 爆量檢查 (1.8倍)
+    # ----------------------------------------
     vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
     if vol_ma5 == 0: vol_ma5 = 1
     is_volume_surge = today['Volume'] > (vol_ma5 * 1.8)
     
-    # 條件 A: 嚴格版咕嚕咕嚕
+    # ----------------------------------------
+    # 條件 A: 嚴格版咕嚕咕嚕 (底部轉折)
+    # ----------------------------------------
     condition_a = False
     reason_a = ""
     
-    # K < 50 且 勾頭 (K > prev_K)
     kd_low_zone = today['K'] < 50 
     k_hook_up = (today['K'] > prev['K']) or (today['K'] > today['D'])
-    # 止跌 (站上5日線)
     price_stable = today['Close'] > today['MA5']
-    # 能量增強 (綠柱縮短)
     macd_improving = today['MACD_Hist'] > prev['MACD_Hist']
     
     if kd_low_zone and k_hook_up and price_stable and macd_improving:
         condition_a = True
         reason_a = "底部咕嚕咕嚕 (KD勾頭+站上5日線+能量增強)"
 
+    # ----------------------------------------
     # 條件 B: 嚴格版高檔強勢整理
+    # ----------------------------------------
     max_k_recent = df['K'].rolling(10).max().iloc[-1]
     price_change_5d = (today['Close'] - df['Close'].iloc[-6]) / df['Close'].iloc[-6]
     
-    if (max_k_recent > 70) and (40 <= today['K'] <= 60) and (abs(price_change_5d) < 0.03):
+    if (max_k_recent > 70) and (40 <= today['K'] <= 60) and (abs(price_change_5d) < 0.04):
         condition_a = True
         reason_a = "高檔強勢整理 (KD修正但價穩)"
 
+    # ----------------------------------------
     # 條件 C: SOP (MACD翻紅+趨勢多+KD金叉)
+    # ----------------------------------------
     condition_b = False
     macd_flip = (prev['MACD_Hist'] < 0) and (today['MACD_Hist'] > 0)
     trend_bull = today['Close'] > df['MA20'].iloc[-1] 
@@ -123,20 +123,50 @@ def check_miniko_strategy(stock_id, df):
     if macd_flip and trend_bull and kd_cross:
         condition_b = True
     
-    # 綜合判斷
+    # ----------------------------------------
+    # 條件 D (新功能): 主力鐵底連買 (支撐+連3紅)
+    # ----------------------------------------
+    condition_d = False
+    reason_d = ""
+    
+    # 1. 強力支撐 (鐵底): 過去 10 天的股價波動幅度很小 (箱型整理)
+    recent_high_10 = df['High'].rolling(10).max().iloc[-1]
+    recent_low_10 = df['Low'].rolling(10).min().iloc[-1]
+    # 計算箱型震幅 (最高-最低)/最低
+    box_range = (recent_high_10 - recent_low_10) / recent_low_10
+    
+    # 2. 主力連買 (模擬): 最近 3 天都是紅K (收盤 >= 開盤) 或是 股價天天漲
+    last_3_days = df.iloc[-3:]
+    # 檢查是否連三天紅K (主力有在顧)
+    three_red_soldiers = all(last_3_days['Close'] >= last_3_days['Open'])
+    # 或者 連續三天股價沒跌 (收盤價 >= 前一天收盤價)
+    three_days_up = (df['Close'].iloc[-1] >= df['Close'].iloc[-2]) and \
+                    (df['Close'].iloc[-2] >= df['Close'].iloc[-3])
+    
+    # 邏輯：震幅小於 6% (平台整理) 並且 (連三紅 或 連三天漲)
+    if (box_range < 0.06) and (three_red_soldiers or three_days_up):
+        condition_d = True
+        reason_d = "主力鐵底護盤 (平台整理+連3日買盤)"
+
+    # ----------------------------------------
+    # 綜合決策
+    # ----------------------------------------
     reasons = []
     is_red_candle = today['Close'] >= today['Open']
     
     if is_volume_surge and is_red_candle:
-         reasons.append("【籌碼】爆量紅K (量增 > 1.8倍)")
+         reasons.append("【籌碼】爆量紅K (量增>1.8倍)")
     
     if condition_a:
         reasons.append(f"【型態】{reason_a}")
     if condition_b:
         reasons.append("【訊號】SOP買點 (MACD翻紅+KD金叉)")
+    if condition_d:
+        reasons.append(f"【主力】{reason_d}")
         
+    # 只要符合 A(型態) 或 B(SOP) 或 D(主力鐵底) 或 (爆量+紅K) 任一項即可
     isValid = False
-    if condition_a or condition_b:
+    if condition_a or condition_b or condition_d:
         isValid = True
     elif is_volume_surge and is_red_candle:
         isValid = True
@@ -148,28 +178,26 @@ def check_miniko_strategy(stock_id, df):
 
 # --- 4. 執行介面 ---
 
-st.info("💡 系統預設抓取「即時熱門榜」，若遇連線阻擋將自動切換至「權值熱門股名單」，確保分析不中斷。")
+st.info("💡 系統掃描條件：1. 咕嚕咕嚕/高檔整理 2. SOP 3. 爆量紅K 4. 主力鐵底連買 (New!)")
 
 col1, col2 = st.columns([3, 1])
 with col1:
-    status_header = st.empty()
-    status_header.write("Miniko 準備就緒...")
+    status_msg = st.empty()
+    status_msg.write("Miniko 準備就緒...")
 with col2:
     scan_btn = st.button("🚀 啟動全自動掃描", type="primary")
 
 if scan_btn:
-    # 1. 取得名單 (含自動備援)
     with st.spinner("正在獲取股票清單..."):
         top_stocks, source_msg = get_top_volume_stocks()
     
-    st.caption(source_msg) # 顯示目前的資料來源
-    st.write(f"共鎖定 {len(top_stocks)} 檔股票，開始 AI 嚴格篩選...")
+    st.caption(source_msg)
+    st.write(f"共鎖定 {len(top_stocks)} 檔股票，開始 AI 深度篩選...")
     
     found_stocks = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    # 2. 執行迴圈
     for i, stock_id in enumerate(top_stocks):
         status_text.text(f"正在分析 ({i+1}/{len(top_stocks)}): {stock_id}")
         
@@ -203,9 +231,8 @@ if scan_btn:
     
     status_text.text("掃描完成！")
     
-    # 3. 顯示結果
     if found_stocks:
-        st.success(f"🎉 掃描完成！發現 {len(found_stocks)} 檔符合「Miniko 嚴格版」條件的個股！")
+        st.success(f"🎉 發現 {len(found_stocks)} 檔符合條件的潛力股！")
         st.dataframe(pd.DataFrame(found_stocks), use_container_width=True)
     else:
-        st.warning("太嚴格了？目前的清單中，沒有發現符合「底部轉強」或「SOP」的標的，建議明天開盤再試！")
+        st.warning("太嚴格了？目前清單中，沒有發現符合條件的標的。")
