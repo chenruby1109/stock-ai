@@ -4,3 +4,10 @@ pandas
 requests
 scipy
 numpy
+streamlit
+yfinance
+pandas
+numpy
+requests
+lxml
+html5lib
