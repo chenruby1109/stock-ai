@@ -2,17 +2,22 @@ name: Miniko Stock Bot
 
 on:
   schedule:
-    # 這裡的時間是 UTC 時間 (比台灣慢 8 小時)
-    
-    # 1. 盤中監控 (台灣 09:00 ~ 13:30)
-    # 設定：週一到週五，UTC 01:00 到 05:00，每 15 分鐘執行一次
+    # 盤中監控：週一至週五 UTC 01:00 ~ 05:30 (每15分)
     - cron: '*/15 1-5 * * 1-5'
-    
-    # 2. 盤後報告 (台灣 14:30)
-    # 設定：週一到週五，UTC 06:30 執行一次
+    # 盤後報告：週一至週五 UTC 06:30
     - cron: '30 6 * * 1-5'
     
-  workflow_dispatch: # 這行讓你可以在網頁上按按鈕手動測試
+  # 🔥 新增這裡：手動觸發時，跳出選單讓你選
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '請選擇執行模式'
+        required: true
+        default: 'report'
+        type: choice
+        options:
+        - report
+        - monitor
 
 jobs:
   run-bot:
@@ -31,20 +36,25 @@ jobs:
       run: |
         pip install -r requirements.txt
         
-    - name: Run Bot Logic
+    - name: Run Bot
       env:
-        # 這裡會去讀取你在 Settings 設定的密鑰
         TG_TOKEN: ${{ secrets.TG_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
       run: |
-        # 取得目前的小時 (UTC)
-        HOUR=$(date -u +%H)
+        # 邏輯判斷：
+        # 1. 如果是「手動 (workflow_dispatch)」，就讀取你選的模式
+        # 2. 如果是「自動排程 (schedule)」，就看時間決定
         
-        # 邏輯判斷：如果是 UTC 6點 (台灣下午2點)，就跑報告模式
-        if [ "$HOUR" -eq "06" ]; then
-          echo "執行模式：盤後報告"
-          python cloud_bot.py report
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          echo "👉 手動觸發模式：${{ github.event.inputs.mode }}"
+          python cloud_bot.py ${{ github.event.inputs.mode }}
         else
-          echo "執行模式：盤中監控"
-          python cloud_bot.py monitor
+          HOUR=$(date -u +%H)
+          if [ "$HOUR" -eq "06" ]; then
+            echo "⏰ 自動排程：盤後報告時間"
+            python cloud_bot.py report
+          else
+            echo "⏰ 自動排程：盤中監控時間"
+            python cloud_bot.py monitor
+          fi
         fi
