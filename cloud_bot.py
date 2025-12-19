@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timedelta
 
 # ================= 參數設定區 =================
-# 請填入您的 Token
+# ⚠️ 請記得填入您的 Token
 TELEGRAM_TOKEN = os.environ.get("TG_TOKEN", "你的_TOKEN_填在這裡")
 TELEGRAM_CHAT_ID = os.environ.get("TG_CHAT_ID", "你的_ID_填在這裡")
 
@@ -140,24 +140,23 @@ def analyze_strategy(df):
     atr = today['ATR'] if not pd.isna(today['ATR']) else today['Close'] * 0.02
     
     # 1. 建議買點
-    buy_aggressive = max(today['MA5'], fib['0.200']) # 激進: 5日線或0.2回檔
-    buy_conservative = max(today['MA20'], fib['0.382']) # 保守: 月線或0.382
+    buy_aggressive = max(today['MA5'], fib['0.200']) 
+    buy_conservative = max(today['MA20'], fib['0.382']) 
     
-    # 2. 勝率模擬 (基於技術面評分)
+    # 2. 勝率模擬 
     score = 50
     if today['Close'] > today['MA20']: score += 10
-    if today['MA20'] > today['MA60']: score += 10 # 多頭排列
+    if today['MA20'] > today['MA60']: score += 10 
     if today['MACD_Hist'] > 0: score += 10
-    if today['K'] < 80 and today['K'] > today['D']: score += 10 # 金叉且未過熱
+    if today['K'] < 80 and today['K'] > today['D']: score += 10 
     if today['Volume'] > today['Vol_MA5']: score += 5
-    win_rate = min(score, 85) # 上限 85%
+    win_rate = min(score, 85) 
     
     # 3. 目標價計算
-    target_price = today['Close'] + (atr * 3) # 短線目標約 3個ATR
+    target_price = today['Close'] + (atr * 3) 
     
-    # 4. 達標機率 (隨機動態模擬，基於波動度)
-    # 若現在是強多頭 (score高)，達標機率高
-    prob_target = int(win_rate * 0.8) # 簡單估算
+    # 4. 達標機率
+    prob_target = int(win_rate * 0.8) 
     
     return {
         "buy_agg": buy_aggressive,
@@ -217,22 +216,31 @@ def run_monitor():
     print("👀 盤中哨兵模式啟動 (每 5 分鐘掃描 + 定時報告)...")
     
     alert_history = {} 
-    # 記錄定時報告是否已經發送過 (避免重複發)
-    scheduled_report_sent = {"10:20": False, "12:00": False}
+    
+    # ⚠️ 為了讓您測試，我加了 04:11 ~ 04:15，請趕快執行！
+    scheduled_report_sent = {
+        "10:20": False, 
+        "12:00": False, 
+        "04:11": False, 
+        "04:12": False,
+        "04:13": False,
+        "04:14": False,
+        "04:15": False
+    }
 
     while True: 
         now = datetime.now()
         now_str = now.strftime('%H:%M')
         print(f"\n🔄 [{now_str}] 掃描中...")
         
-        # --- 🕒 定時策略報告觸發區 (10:20 & 12:00) ---
-        target_times = ["10:20", "12:00"]
+        # --- 🕒 定時策略報告觸發區 (含測試時間) ---
+        target_times = ["10:20", "12:00", "04:11", "04:12", "04:13", "04:14", "04:15"]
+        
         for t_time in target_times:
-            # 如果時間到了 (誤差5分鐘內) 且 還沒發送過
             if t_time == now_str and not scheduled_report_sent[t_time]:
                 print(f"⏰ 觸發 {t_time} 定時策略報告！")
                 
-                strategy_msg = f"🔔 <b>Miniko {t_time} 策略推演</b> 🔔\n\n"
+                strategy_msg = f"🔔 <b>Miniko {t_time} 策略推演 (測試)</b> 🔔\n\n"
                 
                 for code, name in WATCH_LIST.items():
                     try:
@@ -249,14 +257,11 @@ def run_monitor():
                     except: pass
                     
                 send_telegram(strategy_msg)
-                scheduled_report_sent[t_time] = True # 標記已發送
+                scheduled_report_sent[t_time] = True 
         
-        # 每天過 12:05 後重置 10:20 的狀態 (為隔天做準備，若腳本不重啟)
-        if now_str == "12:05": 
-            scheduled_report_sent["10:20"] = False
-        # 每天過 13:30 後重置 12:00 的狀態
-        if now_str == "13:30":
-            scheduled_report_sent["12:00"] = False
+        # 重置邏輯 (測試用不到，但保留)
+        if now_str == "12:05": scheduled_report_sent["10:20"] = False
+        if now_str == "13:30": scheduled_report_sent["12:00"] = False
 
         # --- 原有監控邏輯 ---
         for code, name in WATCH_LIST.items():
@@ -268,13 +273,11 @@ def run_monitor():
                 signals = check_conditions(df, code, name)
                 
                 if signals:
-                    # 冷卻檢查
                     last_sent_time = alert_history.get(code)
                     if last_sent_time:
                         if (datetime.now() - last_sent_time).seconds < 3600:
                             continue
 
-                    # 準備發送
                     today = df.iloc[-1]
                     prev = df.iloc[-2]
                     chg = today['Close'] - prev['Close']
@@ -300,8 +303,8 @@ def run_monitor():
             
             time.sleep(1) 
         
-        print("💤 休息 5 分鐘...")
-        time.sleep(300)
+        print("💤 休息 60 秒後繼續 (為了測試改快一點)...")
+        time.sleep(60) # 測試時改成 60 秒掃一次比較快
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
