@@ -1,0 +1,34 @@
+name: Miniko AI 戰略指揮室 (Auto Run)
+
+on:
+  schedule:
+    # 台灣 08:50 (UTC 00:50) 自動啟動
+    - cron: '50 0 * * 1-5'
+  workflow_dispatch: # 允許手動按按鈕測試
+
+jobs:
+  stock-monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320 # 跑 5小時20分後自動下班 (08:50~14:10)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas requests lxml numpy
+
+      - name: Run Miniko Bot
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TZ: 'Asia/Taipei'
+        run: |
+          python cloud_bot.py monitor
