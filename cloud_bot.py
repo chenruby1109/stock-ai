@@ -156,4 +156,121 @@ def run_daily_report():
             df = get_data(code)
             if df is None: continue
             df = calc_indicators(df)
-            today = df.iloc[-1
+            today = df.iloc[-1]
+            prev = df.iloc[-2]
+            chg = today['Close'] - prev['Close']
+            pct = (chg / prev['Close']) * 100
+            icon = "🔺" if pct > 0 else "💚" if pct < 0 else "➖"
+            trend = "盤整"
+            if today['Close'] > today['MA20'] and today['MA20'] > today['MA60']: trend = "多頭"
+            if today['Close'] < today['MA20'] and today['MA20'] < today['MA60']: trend = "空頭"
+            
+            report += f"<b>{name} ({code})</b> {icon} {today['Close']} ({pct:+.2f}%)\n"
+            report += f"🌊 趨勢: {trend} | KD: {int(today['K'])}/{int(today['D'])}\n"
+            signals = check_conditions(df, code, name)
+            if signals:
+                report += f"💡 訊號: {', '.join(signals)}\n"
+            else:
+                report += f"💤 狀態: 無特殊訊號\n"
+            report += "---------------\n"
+            time.sleep(1) 
+        except: pass
+
+    report += "\n<i>(Miniko AI 自動生成)</i>"
+    send_telegram(report)
+
+# --- 模式 B: 盤中監控 (含定時策略報告) ---
+def run_monitor():
+    print("👀 盤中哨兵模式啟動 (已開啟敏捷測試模式)...")
+    
+    alert_history = {} 
+    
+    # 測試時間清單：從 04:14 到 04:30 每一分鐘都加進去，確保您測得到
+    test_times = [f"04:{i:02d}" for i in range(14, 31)] 
+    # 加入原本的定時時間
+    target_times = ["10:20", "12:00"] + test_times
+    
+    # 初始化發送狀態
+    scheduled_report_sent = {t: False for t in target_times}
+
+    while True: 
+        now = datetime.now()
+        now_str = now.strftime('%H:%M')
+        
+        # 顯示目前系統時間，讓您確認
+        print(f"\r🔄 系統時間: {now.strftime('%H:%M:%S')} | 正在掃描...", end="")
+        
+        # --- 🕒 定時策略報告觸發區 ---
+        for t_time in target_times:
+            if t_time == now_str and not scheduled_report_sent[t_time]:
+                print(f"\n⏰ 時間到 ({t_time})！觸發定時策略報告...")
+                
+                strategy_msg = f"🔔 <b>Miniko {t_time} 策略推演</b> 🔔\n\n"
+                
+                for code, name in WATCH_LIST.items():
+                    try:
+                        df = get_data(code)
+                        if df is None: continue
+                        df = calc_indicators(df)
+                        strat = analyze_strategy(df)
+                        
+                        strategy_msg += f"<b>📌 {name} ({code})</b>\n"
+                        strategy_msg += f"🛒 買點: {strat['buy_agg']:.1f}(激) / {strat['buy_con']:.1f}(穩)\n"
+                        strategy_msg += f"🎲 勝率: {strat['win_rate']}%\n"
+                        strategy_msg += f"🎯 目標: {strat['target']:.1f} (機率{strat['prob_target']}%)\n"
+                        strategy_msg += f"------------------\n"
+                    except: pass
+                    
+                send_telegram(strategy_msg)
+                scheduled_report_sent[t_time] = True 
+
+        # --- 原有監控邏輯 ---
+        for code, name in WATCH_LIST.items():
+            try:
+                df = get_data(code)
+                if df is None: continue
+                df = calc_indicators(df)
+                signals = check_conditions(df, code, name)
+                
+                if signals:
+                    last_sent_time = alert_history.get(code)
+                    if last_sent_time:
+                        if (datetime.now() - last_sent_time).seconds < 3600:
+                            continue
+
+                    today = df.iloc[-1]
+                    prev = df.iloc[-2]
+                    chg = today['Close'] - prev['Close']
+                    pct = (chg / prev['Close']) * 100
+                    icon = "🔺" if pct > 0 else "💚" if pct < 0 else "➖"
+                    
+                    msg = f"🚨 <b>Miniko 盤中快報</b> 🚨\n\n"
+                    msg += f"<b>{name} ({code})</b> 出現訊號！\n"
+                    msg += f"💰 現價: {today['Close']} {icon} ({pct:+.2f}%)\n"
+                    msg += f"📊 量能: {int(today['Volume']/1000)} 張\n"
+                    msg += f"---------------------\n"
+                    msg += f"<b>💡 觸發條件：</b>\n"
+                    msg += "\n".join([f"{s}" for s in signals])
+                    msg += f"\n---------------------\n"
+                    msg += f"<i>(時間: {now_str})</i>"
+                    
+                    print(f"\n🚀 發送 {name} 快報！")
+                    send_telegram(msg)
+                    alert_history[code] = datetime.now()
+            except: pass
+            
+        # ⚠️ 關鍵修改：只休息 5 秒，確保絕對抓到每一分鐘的變化
+        time.sleep(5)
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        mode = sys.argv[1]
+    else:
+        mode = "report" 
+
+    if mode == "report":
+        run_daily_report()
+    elif mode == "monitor":
+        run_monitor()
+    else:
+        print("請指定模式: python cloud_bot.py [monitor|report]")
