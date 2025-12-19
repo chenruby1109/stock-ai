@@ -20,17 +20,18 @@ st.markdown("""
     .ai-advice { background-color: #e3f2fd; padding: 25px; border-radius: 12px; border-left: 6px solid #1976d2; font-size: 16px; line-height: 1.6; }
     .advice-section { margin-bottom: 15px; }
     .advice-title { font-weight: bold; color: #0d47a1; font-size: 18px; margin-bottom: 5px; display: block; }
+    .buy-zone { background-color: #e8f5e9; padding: 15px; border-radius: 8px; border-left: 5px solid #4caf50; margin-top: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V23.1 AI詳述版)</p>', unsafe_allow_html=True)
+st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V24.0 買點建議版)</p>', unsafe_allow_html=True)
 
 # --- 側邊欄 ---
 with st.sidebar:
     st.header("🔍 個股戰情室")
     stock_input = st.text_input("輸入代號 (如 2330)", value="2330")
     run_btn = st.button("🚀 啟動全維度分析", type="primary")
-    st.info("💡 V23.1 特點：AI建議大幅擴充、詳細戰略劇本、完整保留所有功能。")
+    st.info("💡 V24 特點：新增買入價位建議、修正目標時間算法(更務實)。")
 
 # --- 1. 資料獲取 ---
 @st.cache_data(ttl=3600)
@@ -72,10 +73,15 @@ def get_data(symbol):
 def calc_indicators(df):
     if df is None or df.empty: return df
     
-    mas = [7, 22, 34, 58, 116, 224]
+    mas = [5, 10, 20, 60, 120, 240] # 改用更標準的均線參數計算支撐
     for ma in mas:
         df[f'MA{ma}'] = df['Close'].rolling(ma).mean()
-        
+    
+    # 另外算 MA7, MA22 等給均線特攻隊用
+    special_mas = [7, 22, 34, 58, 116, 224]
+    for ma in special_mas:
+        df[f'SMA{ma}'] = df['Close'].rolling(ma).mean()
+
     df['9_High'] = df['High'].rolling(9).max()
     df['9_Low'] = df['Low'].rolling(9).min()
     df['RSV'] = (df['Close'] - df['9_Low']) / (df['9_High'] - df['9_Low']) * 100
@@ -100,7 +106,7 @@ def calc_indicators(df):
     df['BB_Pct'] = (df['Close'] - df['BB_Low']) / (df['BB_Up'] - df['BB_Low'])
     
     # 乖離 & ATR
-    df['BIAS_22'] = (df['Close'] - df['MA22']) / df['MA22'] * 100
+    df['BIAS_20'] = (df['Close'] - df['MA20']) / df['MA20'] * 100
     df['TR'] = np.maximum(df['High'] - df['Low'], np.abs(df['High'] - df['Close'].shift(1)))
     df['ATR'] = df['TR'].rolling(14).mean()
     
@@ -111,22 +117,22 @@ def get_advanced_wave(df, timeframe="日"):
     if len(df) < 120: return "資料不足"
     price = df['Close'].iloc[-1]
     recent_high = df['High'].iloc[-250:].max() if timeframe=="日" else df['High'].max()
-    ma22 = df['MA22'].iloc[-1]
-    ma58 = df['MA58'].iloc[-1]
-    ma224 = df.get('MA224', df['MA58']).iloc[-1]
+    ma20 = df['MA20'].iloc[-1]
+    ma60 = df['MA60'].iloc[-1]
+    ma240 = df.get('MA240', df['MA60']).iloc[-1]
     k_val = df['K'].iloc[-1]
     
     if timeframe == "日":
         if price >= recent_high * 0.98: return "第 3 浪 (主升噴出)"
-        elif price > ma224 and price > ma58 and price < ma22: return "第 4 浪 (多頭修正)"
-        elif price > ma22 and k_val < 50: return "第 1 浪 (初升段)"
-        elif price < ma224: return "空頭修正波 (A/B/C)"
+        elif price > ma240 and price > ma60 and price < ma20: return "第 4 浪 (多頭修正)"
+        elif price > ma20 and k_val < 50: return "第 1 浪 (初升段)"
+        elif price < ma240: return "空頭修正波 (A/B/C)"
         else: return "第 2 浪 (回檔整理)"
-    else: # 60分K
-        if price > ma22 and k_val > 80: return "3-3 (短線急漲)"
-        elif price < ma22 and k_val < 20: return "4-C (修正末端)"
-        elif price > ma58 and price < ma22: return "4-B (修正反彈)"
-        elif price > ma22 and k_val < 50: return "3-1 (短線起漲)"
+    else: 
+        if price > ma20 and k_val > 80: return "3-3 (短線急漲)"
+        elif price < ma20 and k_val < 20: return "4-C (修正末端)"
+        elif price > ma60 and price < ma20: return "4-B (修正反彈)"
+        elif price > ma20 and k_val < 50: return "3-1 (短線起漲)"
         else: return "盤整待變"
 
 # --- 4. 費波那契 ---
@@ -142,17 +148,17 @@ def get_fibonacci(df):
         "trend_high": high, "trend_low": low
     }
 
-# --- 5. 深度戰略生成 (AI詳述版) ---
+# --- 5. 深度戰略生成 ---
 def generate_deep_strategy(check, wave_d, wave_60, fib, df):
     price = df['Close'].iloc[-1]
-    ma22 = df['MA22'].iloc[-1]
-    ma58 = df['MA58'].iloc[-1]
-    bias = df['BIAS_22'].iloc[-1]
+    ma20 = df['MA20'].iloc[-1]
+    ma60 = df['MA60'].iloc[-1]
+    bias = df['BIAS_20'].iloc[-1]
     bb_pct = df['BB_Pct'].iloc[-1]
     
     sections = []
     
-    # --- 1. 戰略總評 ---
+    # 1. 戰略總評
     trend_desc = ""
     if "3 浪" in wave_d:
         trend_desc = "目前處於極強勢的『主升段 (第3浪)』，多頭動能充沛，是獲利最快、也是最肥美的一段。"
@@ -171,7 +177,7 @@ def generate_deep_strategy(check, wave_d, wave_60, fib, df):
     </div>
     """)
     
-    # --- 2. 籌碼與動能解讀 ---
+    # 2. 籌碼與動能
     chips_desc = []
     if check['warrant_5m']:
         chips_desc.append("🔥 **權證大戶進場：** 偵測到單日權證做多金額預估超過 500 萬，這通常代表『聰明錢』在押寶短線噴出，主力作多意圖強烈。")
@@ -179,7 +185,6 @@ def generate_deep_strategy(check, wave_d, wave_60, fib, df):
         chips_desc.append("🛡️ **主力護盤：** 關鍵主力已連續買超 3~10 天，籌碼換手成功，底部有強立支撐。")
     if check['is_sop']:
         chips_desc.append("✅ **SOP 訊號亮燈：** 技術面出現 MACD 翻紅 + KD 金叉 + SAR 轉多，三線合一，是標準的起漲訊號。")
-    
     if not chips_desc:
         chips_desc.append("⚠️ **籌碼中性：** 目前未偵測到顯著的主力或權證大單，股價波動主要隨大盤或散戶情緒起伏。")
         
@@ -190,21 +195,18 @@ def generate_deep_strategy(check, wave_d, wave_60, fib, df):
     </div>
     """)
     
-    # --- 3. 操作劇本與買賣建議 ---
+    # 3. 操作劇本
     action_desc = ""
-    # 布林判斷
     if bb_pct > 1.0:
         action_desc = "🔴 **賣出訊號 (布林過熱)：** 股價衝出布林上軌，正乖離過大。根據統計，這時候追高風險極大，隔日拉回機率高達 75%。建議持有者分批獲利了結，空手者切勿追價。"
     elif bb_pct < 0.0:
         action_desc = "🟢 **買進訊號 (布林超跌)：** 股價跌破布林下軌，負乖離過大。根據統計，隔日反彈機率約 65%，可嘗試搶短，停損設今日低點。"
-    # 乖離判斷
     elif bias > 15:
         action_desc = f"⚠️ **風險警示：** 月線乖離率達 {bias:.2f}%，就像橡皮筋拉到極限，隨時會『彈回來』修正。建議等待回測 5日線 或 10日線 再進場。"
-    # 趨勢操作
     elif "3 浪" in wave_d:
         action_desc = "🚀 **順勢操作：** 既然是主升段，操作策略應為『拉回找買點』。只要不破 10日線，建議波段單續抱，直到爆量長黑或跌破月線為止。"
     elif "4 浪" in wave_d:
-        action_desc = f"📉 **低接策略：** 修正波適合『逢低佈局』。建議在 0.382 黃金分割位 ({fib['0.382']:.2f}) 或 季線 ({ma58:.2f}) 附近分批建立部位。"
+        action_desc = f"📉 **低接策略：** 修正波適合『逢低佈局』。建議在 0.382 黃金分割位 ({fib['0.382']:.2f}) 或 季線 ({ma60:.2f}) 附近分批建立部位。"
     else:
         action_desc = "👀 **觀望策略：** 目前多空不明，建議多看少做，等待突破箱型整理區間再順勢操作。"
 
@@ -224,7 +226,7 @@ if run_btn:
         stock_name = get_stock_name(clean_symbol)
         df_d, df_60, ticker_code = get_data(clean_symbol)
         
-        if df_d is None or len(df_d) < 224:
+        if df_d is None or len(df_d) < 240:
             st.error("❌ 資料不足。")
         else:
             df_d = calc_indicators(df_d)
@@ -249,7 +251,7 @@ if run_btn:
             k_hook = (today['K'] > prev['K'])
             check['is_gulu'] = kd_low and k_hook
             check['is_high_c'] = (df_d['K'].rolling(10).max().iloc[-1] > 70) and (40 <= today['K'] <= 60)
-            check['is_sop'] = (prev['MACD_Hist'] <= 0 and today['MACD_Hist'] > 0) and (today['Close'] > today['MA22']) and (prev['K'] < prev['D'] and today['K'] > today['D'])
+            check['is_sop'] = (prev['MACD_Hist'] <= 0 and today['MACD_Hist'] > 0) and (today['Close'] > today['SMA22']) and (prev['K'] < prev['D'] and today['K'] > today['D'])
             recent = df_d.iloc[-10:]
             is_strong = (recent['Close'] >= recent['Open']) | (recent['Close'] > recent['Close'].shift(1))
             consecutive = 0
@@ -259,20 +261,29 @@ if run_btn:
             check['consecutive'] = consecutive
             check['is_buy_streak'] = 3 <= consecutive <= 10
 
-            # 預計達標時間計算
+            # 預計達標時間 (修正版：更保守)
             atr = df_d['ATR'].iloc[-1]
             targets = []
-            for mult, win in [(1.05, "85%"), (1.10, "65%"), (1.20, "40%")]:
+            # 係數調整：不再假設每天漲1個ATR，而是每天只漲 0.3~0.5個 ATR (考慮震盪)
+            for mult, win, atr_ratio in [(1.05, "85%", 0.5), (1.10, "65%", 0.4), (1.20, "40%", 0.3)]:
                 p = today['Close'] * mult
-                days = max(1, int((p - today['Close']) / atr)) if atr > 0 else 5
+                dist = p - today['Close']
+                daily_move = atr * atr_ratio # 預估每日有效漲幅
+                days = max(2, int(dist / daily_move)) if daily_move > 0 else 10
                 targets.append({"p": p, "w": win, "days": days})
+
+            # 買入價位計算 (Buy Zones)
+            # 激進: 5日線 或 0.2回檔
+            buy_aggressive = max(today['MA5'], fib['0.200'])
+            # 保守: 20日線 或 0.382回檔
+            buy_conservative = max(today['MA20'], fib['0.382'])
 
             ai_advice = generate_deep_strategy(check, wave_d, wave_60, fib, df_d)
 
             # --- 顯示層 ---
             st.subheader(f"📊 {clean_symbol} {stock_name} 全維度戰略報告")
             
-            # 1. AI 總司令 (詳細版)
+            # AI 總司令
             st.markdown(f"""
             <div class='ai-advice'>
                 <h4>🤖 AI 總司令戰略建議 (Detailed Report)</h4>
@@ -280,9 +291,20 @@ if run_btn:
             </div>
             """, unsafe_allow_html=True)
             
+            # 買入建議區塊 (New!)
+            st.markdown(f"""
+            <div class='buy-zone'>
+                <h4>🛒 AI 建議買入價位 (Buy Zones)</h4>
+                <ul>
+                    <li><b>🦁 激進追價區 (Aggressive)：</b> {buy_aggressive:.2f} 元 (約 5日線/0.2強勢回檔) — 適合動能交易者。</li>
+                    <li><b>🐢 保守低接區 (Conservative)：</b> {buy_conservative:.2f} 元 (約 月線/0.382支撐) — 適合波段佈局者。</li>
+                </ul>
+            </div>
+            """, unsafe_allow_html=True)
+            
             st.markdown("---")
 
-            # 2. 波浪與均線
+            # 波浪與均線
             c1, c2 = st.columns(2)
             c1.info(f"🌊 **日線波浪**：{wave_d}")
             c2.info(f"🌊 **60分波浪**：{wave_60}")
@@ -292,13 +314,13 @@ if run_btn:
             ma_list = [7, 22, 34, 58, 116, 224]
             names = ["攻擊", "月線", "轉折", "季線", "半年", "年線"]
             for i, ma in enumerate(ma_list):
-                val = today[f'MA{ma}']
+                val = today[f'SMA{ma}']
                 status = "多" if today['Close'] > val else "空"
                 cols[i].metric(f"{ma}MA ({names[i]})", f"{val:.1f}", status)
 
             st.markdown("---")
 
-            # 3. 費波 & 布林 (詳細版)
+            # 費波 & 布林
             col_f, col_b = st.columns([1, 1])
             with col_f:
                 st.markdown("#### 📐 費波那契 (戰術意義)")
@@ -313,7 +335,7 @@ if run_btn:
             
             with col_b:
                 st.markdown("#### ⚡ 動能與布林解析")
-                bias = today['BIAS_22']
+                bias = today['BIAS_20']
                 bias_msg = "橡皮筋拉太緊 (過熱)" if bias > 10 else "橡皮筋過鬆 (超跌)" if bias < -10 else "張力正常"
                 st.metric("乖離率 (BIAS)", f"{bias:.2f} %", bias_msg)
                 
@@ -324,7 +346,7 @@ if run_btn:
                 st.caption(f"目前位置: {bb_pct*100:.1f}% (0%=下軌, 100%=上軌)")
 
             st.markdown("---")
-            # 4. 條件清單
+            # 條件清單
             st.markdown("#### ✅ 條件全檢核")
             cc1, cc2 = st.columns(2)
             with cc1:
@@ -341,7 +363,7 @@ if run_btn:
                 icon = "✅" if check['is_buy_streak'] else "❌"
                 st.markdown(f"<div class='check-item'>{icon} 連買: {check['consecutive']}天</div>", unsafe_allow_html=True)
 
-            # 5. 目標價 (含時間)
+            # 目標價 (含修正後時間)
             st.markdown("---")
             st.markdown("#### 🎯 預測目標價 (含預估時間)")
             tc1, tc2, tc3 = st.columns(3)
