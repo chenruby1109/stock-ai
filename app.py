@@ -24,7 +24,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V24.0 買點建議版)</p>', unsafe_allow_html=True)
+st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V24.0 超級更新版)</p>', unsafe_allow_html=True)
 
 # --- 側邊欄 ---
 with st.sidebar:
