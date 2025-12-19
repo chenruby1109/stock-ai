@@ -1,0 +1,50 @@
+name: Miniko Stock Bot
+
+on:
+  schedule:
+    # 這裡的時間是 UTC 時間 (比台灣慢 8 小時)
+    
+    # 1. 盤中監控 (台灣 09:00 ~ 13:30)
+    # 設定：週一到週五，UTC 01:00 到 05:00，每 15 分鐘執行一次
+    - cron: '*/15 1-5 * * 1-5'
+    
+    # 2. 盤後報告 (台灣 14:30)
+    # 設定：週一到週五，UTC 06:30 執行一次
+    - cron: '30 6 * * 1-5'
+    
+  workflow_dispatch: # 這行讓你可以在網頁上按按鈕手動測試
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+      
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        
+    - name: Run Bot Logic
+      env:
+        # 這裡會去讀取你在 Settings 設定的密鑰
+        TG_TOKEN: ${{ secrets.TG_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+      run: |
+        # 取得目前的小時 (UTC)
+        HOUR=$(date -u +%H)
+        
+        # 邏輯判斷：如果是 UTC 6點 (台灣下午2點)，就跑報告模式
+        if [ "$HOUR" -eq "06" ]; then
+          echo "執行模式：盤後報告"
+          python cloud_bot.py report
+        else
+          echo "執行模式：盤中監控"
+          python cloud_bot.py monitor
+        fi
