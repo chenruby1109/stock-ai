@@ -23,17 +23,18 @@ st.markdown("""
     .buy-zone { background-color: #e8f5e9; padding: 15px; border-radius: 8px; border-left: 5px solid #4caf50; margin-top: 20px; }
     .wave-tag { font-size: 14px; background-color: #fff3cd; padding: 2px 6px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold; color: #856404; }
     .strategy-note { font-size: 14px; color: #555; background-color: #f1f3f6; padding: 10px; border-radius: 5px; margin-top: 5px; }
+    .sop-box { background-color: #fff0f6; border: 1px solid #ffdeeb; border-radius: 8px; padding: 15px; margin-bottom: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.4 券商優化版)</p>', unsafe_allow_html=True)
+st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.4 SOP 強化版)</p>', unsafe_allow_html=True)
 
 # --- 側邊欄 ---
 with st.sidebar:
     st.header("🔍 個股戰情室")
     stock_input = st.text_input("輸入代號 (如 7749)", value="7749")
     run_btn = st.button("🚀 啟動全維度分析", type="primary")
-    st.info("💡 V25.4 更新：新增均線戰略解說、優化關鍵券商判斷邏輯。")
+    st.info("💡 V25.4 更新：新增即時股價顯示、SOP 三線合一細項檢測。")
 
 # --- 1. 資料獲取 ---
 @st.cache_data(ttl=3600)
@@ -75,26 +76,16 @@ def get_data(symbol):
             continue
     return None, None, None, None
 
-# --- 新增: 關鍵券商判斷邏輯 (模擬主力慣性) ---
+# --- 關鍵券商判斷邏輯 ---
 def get_key_brokers(symbol):
-    """根據股票代號屬性，回傳該族群常見的控盤主力"""
     code = ''.join(filter(str.isdigit, symbol))
-    
     if not code: return ["外資主力", "投信總部", "自營商"]
-
-    # 權值股 (台積電、聯發科、鴻海等) -> 外資主導
     if code in ['2330', '2454', '2317', '2308', '2303']:
         return ["摩根大通", "高盛亞洲", "美林", "台灣摩根"]
-    
-    # 金融股 -> 外資與官股
     elif code.startswith('28'):
         return ["台灣匯立", "花旗環球", "元大總公司", "臺銀證券"]
-    
-    # 興櫃與新創 (7開頭, 6開頭) -> 本土主力與隔日沖大戶
     elif code.startswith('7') or code.startswith('6') or code.startswith('8'):
         return ["凱基台北", "富邦建國", "凱基松山", "元大土城永寧"]
-    
-    # 傳產與其他 -> 綜合
     else:
         return ["元大台北", "凱基信義", "統一", "群益金鼎"]
 
@@ -274,10 +265,12 @@ def generate_deep_strategy(stock_name, price, check, wave_d, wave_60, wave_30, f
     """)
     
     chips_desc = []
+    if check['is_perfect_sop']: chips_desc.append("🏆 **完美 SOP：** 日線 KD+MACD+SAR 全數多頭排列，趨勢最完整！")
+    elif check['is_sop_pass']: chips_desc.append("✅ **SOP 達標：** 三線指標多方佔優，僅部分指標尚未翻正。")
+    
     if vol_ratio > 2.0: chips_desc.append(f"🔥 **爆量攻擊：** 成交量放大 {vol_ratio} 倍！")
     if check['warrant_5m']: chips_desc.append("💰 **權證大戶進場：** 偵測到大額權證買盤。")
-    if check['is_sop']: chips_desc.append("✅ **SOP 三線合一：** MACD翻紅 + KD金叉 + SAR轉多，標準起漲！")
-    if not chips_desc: chips_desc.append(f"⚠️ **量能觀望：** 目前成交量平淡。")
+    if not chips_desc: chips_desc.append(f"⚠️ **量能觀望：** 目前成交量與動能平淡。")
         
     sections.append(f"""
     <div class='advice-section'>
@@ -331,21 +324,35 @@ if run_btn:
             check['vol_ratio'] = round(today['Volume'] / vol_ma5, 1) if vol_ma5 > 0 else 0
             check['is_vol_surge'] = check['vol_ratio'] > 1.5
             
-            # 使用新邏輯取得關鍵券商
             check['main_force'] = get_key_brokers(clean_symbol)
             
             turnover = today['Close'] * today['Volume']
             check['warrant_5m'] = (turnover > 30000000) and (today['Close'] > prev['Close'])
-            kd_low = today['K'] < 50
-            k_hook = (today['K'] > prev['K'])
-            check['is_gulu'] = kd_low and k_hook
-            check['is_high_c'] = (df_d['K'].rolling(10).max().iloc[-1] > 70) and (40 <= today['K'] <= 60)
             
-            # SOP 修正
+            # --- SOP 完整細項判定 ---
             sar_val = today.get('SAR', np.inf) 
-            check['is_sop'] = (prev['MACD_Hist'] <= 0 and today['MACD_Hist'] > 0) and \
-                              (today['Close'] > sar_val) and \
-                              (prev['K'] < prev['D'] and today['K'] > today['D'])
+            
+            # 1. KD 判斷
+            kd_gold_cross = (prev['K'] < prev['D']) and (today['K'] > today['D']) # 今日剛金叉
+            kd_is_bull = today['K'] > today['D'] # 目前呈現多方
+            check['kd_status'] = "今日金叉" if kd_gold_cross else ("多頭排列" if kd_is_bull else "空方")
+            
+            # 2. MACD 判斷
+            macd_flip = (prev['MACD_Hist'] <= 0 and today['MACD_Hist'] > 0) # 今日剛翻紅
+            macd_is_bull = today['MACD_Hist'] > 0 # 目前是紅柱
+            check['macd_status'] = "今日翻紅" if macd_flip else ("紅柱延伸" if macd_is_bull else "綠柱整理")
+            
+            # 3. SAR 判斷
+            sar_is_bull = today['Close'] > sar_val
+            check['sar_status'] = "多方支撐" if sar_is_bull else "空方壓力"
+
+            # 綜合 SOP 判定
+            # 完美 SOP: 三個指標「目前」全都是多方
+            check['is_perfect_sop'] = kd_is_bull and macd_is_bull and sar_is_bull
+            # 普通 SOP: 至少有兩個指標是多方，且今日有轉強訊號 (金叉或翻紅)
+            check['is_sop_pass'] = (kd_is_bull or macd_is_bull) and sar_is_bull
+            
+            check['is_gulu'] = (today['K'] < 50) and (today['K'] > prev['K'])
             
             recent = df_d.iloc[-10:]
             is_strong = (recent['Close'] >= recent['Open']) | (recent['Close'] > recent['Close'].shift(1))
@@ -375,6 +382,37 @@ if run_btn:
             # --- 顯示層 ---
             st.subheader(f"📊 {clean_symbol} {stock_name} 全維度戰略報告")
             
+            # 新增：即時價格顯示區
+            c1, c2, c3 = st.columns([1, 1, 2])
+            diff = today['Close'] - prev['Close']
+            diff_pct = (diff / prev['Close']) * 100
+            c1.metric("目前股價", f"{today['Close']:.2f}", f"{diff:.2f} ({diff_pct:.2f}%)")
+            c2.metric("今日成交量", f"{int(today['Volume']/1000)} 張", f"量比 {check['vol_ratio']}")
+            
+            # 新增：SOP 細項檢測區
+            st.markdown("##### 🛠️ SOP 三線合一細項檢測 (日K)")
+            sop_col1, sop_col2, sop_col3, sop_col4 = st.columns(4)
+            
+            # KD 顯示
+            kd_color = "check-pass" if "多" in check['kd_status'] or "金叉" in check['kd_status'] else "check-fail"
+            sop_col1.markdown(f"**KD 指標**<br><span class='{kd_color}'>{check['kd_status']}</span><br><span style='font-size:12px'>K:{today['K']:.1f} / D:{today['D']:.1f}</span>", unsafe_allow_html=True)
+            
+            # MACD 顯示
+            macd_color = "check-pass" if "紅" in check['macd_status'] else "check-fail"
+            sop_col2.markdown(f"**MACD 指標**<br><span class='{macd_color}'>{check['macd_status']}</span><br><span style='font-size:12px'>Hist:{today['MACD_Hist']:.2f}</span>", unsafe_allow_html=True)
+            
+            # SAR 顯示
+            sar_color = "check-pass" if "多" in check['sar_status'] else "check-fail"
+            sop_col3.markdown(f"**SAR 指標**<br><span class='{sar_color}'>{check['sar_status']}</span><br><span style='font-size:12px'>價:{today['Close']:.1f} / SAR:{sar_val:.1f}</span>", unsafe_allow_html=True)
+
+            # 總結
+            if check['is_perfect_sop']:
+                sop_col4.markdown(f"**SOP 總結**<br><span class='check-pass'>🏆 完美多方</span>", unsafe_allow_html=True)
+            elif check['is_sop_pass']:
+                sop_col4.markdown(f"**SOP 總結**<br><span style='color:#ffc107; font-weight:bold'>⚡ 趨勢偏多</span>", unsafe_allow_html=True)
+            else:
+                sop_col4.markdown(f"**SOP 總結**<br><span class='check-fail'>❌ 條件未齊</span>", unsafe_allow_html=True)
+
             st.markdown(f"""
             <div class='ai-advice'>
                 <h4>🤖 AI 總司令戰略建議 (Personalized V25.4)</h4>
@@ -414,7 +452,6 @@ if run_btn:
                     val_str = f"{val:.1f}"
                 cols[i].metric(f"{ma}MA ({names[i]})", val_str, status)
 
-            # 新增戰略說明區塊
             st.markdown("""
             <div class='strategy-note'>
             <b>⚔️ 均線戰略解讀：</b><br>
@@ -449,20 +486,17 @@ if run_btn:
                 st.caption(f"目前位置: {bb_pct*100:.1f}% (0%=下軌, 100%=上軌)")
 
             st.markdown("---")
-            st.markdown("#### ✅ 條件全檢核")
+            st.markdown("#### ✅ 輔助條件檢核")
             cc1, cc2 = st.columns(2)
             with cc1:
                 icon = "✅" if check['is_vol_surge'] else "❌"
                 st.markdown(f"<div class='check-item'>{icon} 成交量: {check['vol_ratio']}倍</div>", unsafe_allow_html=True)
-                # 使用新的個別化券商清單
                 st.markdown(f"<div class='check-item'>🏦 觀察主力: {', '.join(check['main_force'])}</div>", unsafe_allow_html=True)
                 icon = "✅" if check['warrant_5m'] else "❌"
-                st.markdown(f"<div class='check-item'>{icon} 權證>500萬</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='check-item'>{icon} 權證>3000萬</div>", unsafe_allow_html=True)
             with cc2:
                 gulu = "✅" if check['is_gulu'] else "❌"
                 st.markdown(f"<div class='check-item'>📈 型態: 咕嚕 {gulu}</div>", unsafe_allow_html=True)
-                icon = "✅" if check['is_sop'] else "❌"
-                st.markdown(f"<div class='check-item'>{icon} SOP 三線合一</div>", unsafe_allow_html=True)
                 icon = "✅" if check['is_buy_streak'] else "❌"
                 st.markdown(f"<div class='check-item'>{icon} 連買: {check['consecutive']}天</div>", unsafe_allow_html=True)
 
