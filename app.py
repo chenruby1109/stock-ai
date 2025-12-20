@@ -31,14 +31,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.7 股息特化版)</p>', unsafe_allow_html=True)
+st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.8 股息精準&圖表修復版)</p>', unsafe_allow_html=True)
 
 # --- 側邊欄 ---
 with st.sidebar:
     st.header("🔍 個股戰情室")
     stock_input = st.text_input("輸入代號 (如 2330)", value="2330")
     run_btn = st.button("🚀 啟動全維度分析", type="primary")
-    st.info("💡 V25.7 更新：修正單次股息金額、優化AI填息天數演算法。")
+    st.info("💡 V25.8 更新：修復單次股息金額、AI個別化填息天數、修復圖表顯示問題。")
 
 # --- 1. 資料獲取 ---
 @st.cache_data(ttl=3600)
@@ -533,13 +533,21 @@ if run_btn:
             
             st.markdown("---")
             
-            # --- 修改：均線特攻隊 圖表化與定義更新 ---
+            # --- 修改：均線特攻隊 圖表化與定義更新 (修復圖表不顯示問題) ---
             st.markdown("#### 📏 均線特攻隊 (MA Special Squad)")
             
             # 1. 整理圖表數據：只取最近 60 天，避免線條擠壓
-            # 2. 指定需要的欄位，只畫重要的線 (7, 34, 58) chart_cols = ['Close', 'SMA7', 'SMA34', 'SMA58']
+            # 2. 指定需要的欄位，只畫重要的線 (7, 34, 58) 
+
+[Image of moving average crossover]
+
+            chart_cols = ['Close', 'SMA7', 'SMA34', 'SMA58']
             chart_df = df_d[chart_cols].iloc[-60:].copy() 
             
+            # [重要修復] 移除時區資訊，解決 Streamlit Altair 圖表錯誤
+            if chart_df.index.tz is not None:
+                chart_df.index = chart_df.index.tz_localize(None)
+
             st.line_chart(chart_df, color=["#000000", "#FF0000", "#00AA00", "#0000FF"])
             st.caption("黑色:股價 | 紅色:7MA(攻擊) | 綠色:34MA(生命線) | 藍色:58MA(季線)")
 
