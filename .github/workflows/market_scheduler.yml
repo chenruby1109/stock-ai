@@ -2,59 +2,52 @@ name: Miniko Stock Bot
 
 on:
   schedule:
-    # 盤中監控：週一至週五 UTC 01:00 ~ 05:30 (每15分)
-    - cron: '*/15 1-5 * * 1-5'
-    # 盤後報告：週一至週五 UTC 06:30
-    - cron: '30 6 * * 1-5'
+    # 🕒 時間都是 UTC (台灣時間要減 8 小時)
+    # 1. 早班: 台灣 08:40 (UTC 00:40) -> 負責盤中監控 + 13:31 收盤報告
+    - cron: '40 0 * * 1-5'
     
-  # 🔥 新增這裡：手動觸發時，跳出選單讓你選
+    # 2. 晚班: 台灣 16:50 (UTC 08:50) -> 負責 17:01 籌碼戰報
+    - cron: '50 8 * * 1-5'
+
+  # 允許手動按按鈕測試
   workflow_dispatch:
     inputs:
       mode:
-        description: '請選擇執行模式'
+        description: '手動執行模式'
         required: true
-        default: 'report'
+        default: 'monitor'
         type: choice
         options:
-        - report
         - monitor
+        - report
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    
+    # 設定最長執行時間 (GitHub 預設 360 分鐘，我們設好設滿)
+    timeout-minutes: 360 
+
     steps:
     - name: Checkout code
-      uses: actions/checkout@v2
-      
+      uses: actions/checkout@v3
+
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v4
       with:
         python-version: '3.9'
-        
+
     - name: Install dependencies
       run: |
-        pip install -r requirements.txt
-        
-    - name: Run Bot
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install yfinance pandas numpy requests
+
+    - name: Run Miniko Bot
       env:
+        # 請確保你在 GitHub Settings -> Secrets 裡有設定這兩個變數
         TG_TOKEN: ${{ secrets.TG_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        # 設定時區為台北
+        TZ: Asia/Taipei
       run: |
-        # 邏輯判斷：
-        # 1. 如果是「手動 (workflow_dispatch)」，就讀取你選的模式
-        # 2. 如果是「自動排程 (schedule)」，就看時間決定
-        
-        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-          echo "👉 手動觸發模式：${{ github.event.inputs.mode }}"
-          python cloud_bot.py ${{ github.event.inputs.mode }}
-        else
-          HOUR=$(date -u +%H)
-          if [ "$HOUR" -eq "06" ]; then
-            echo "⏰ 自動排程：盤後報告時間"
-            python cloud_bot.py report
-          else
-            echo "⏰ 自動排程：盤中監控時間"
-            python cloud_bot.py monitor
-          fi
-        fi
+        python cloud_bot.py monitor
