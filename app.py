@@ -31,14 +31,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.8 股息精準&圖表修復版)</p>', unsafe_allow_html=True)
+st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.7 除息特化版)</p>', unsafe_allow_html=True)
 
 # --- 側邊欄 ---
 with st.sidebar:
     st.header("🔍 個股戰情室")
     stock_input = st.text_input("輸入代號 (如 2330)", value="2330")
     run_btn = st.button("🚀 啟動全維度分析", type="primary")
-    st.info("💡 V25.8 更新：修復單次股息金額、AI個別化填息天數、修復圖表顯示問題。")
+    st.info("💡 V25.7 更新：修復圖表顯示、優化除息填息演算法。")
 
 # --- 1. 資料獲取 ---
 @st.cache_data(ttl=3600)
@@ -80,60 +80,64 @@ def get_data(symbol):
             continue
     return None, None, None, None
 
-# --- 修改：基本面與除息資訊獲取 (加入趨勢判斷) ---
+# --- 新增：基本面與除息資訊獲取 (修正版) ---
 def get_fundamental_info(ticker, close_price, atr, is_bull_trend):
     info = {}
     try:
         t_info = ticker.info
         
-        # 1. 除息資訊 - 修正邏輯
+        # 1. 除息資訊 - 嘗試獲取 "最近一次" 股利
         ex_date = t_info.get('exDividendDate', None)
         
-        # [修正點] 優先抓取 'lastDividendValue' (最近一次單次股息)，如果沒有才抓 rate
-        dividend = t_info.get('lastDividendValue', 0)
-        if dividend is None or dividend == 0:
-             dividend = t_info.get('dividendRate', 0) # 如果單次抓不到，才用年度的當參考
+        # 優先使用 lastDividendValue (最近一次發放)，若無則用 dividendRate (年度) 並標記
+        last_div = t_info.get('lastDividendValue', 0)
+        annual_div = t_info.get('dividendRate', 0)
+        
+        if last_div and last_div > 0:
+            dividend = last_div
+            div_note = "(最近一次)"
+        else:
+            dividend = annual_div
+            div_note = "(預估年度)"
         
         if ex_date:
             ex_dt = datetime.fromtimestamp(ex_date).date()
             info['ex_date_str'] = ex_dt.strftime('%Y-%m-%d')
             if ex_dt > datetime.now().date():
-                info['div_status'] = "即將除息 (股價將修正)"
+                info['div_status'] = "即將除息"
             else:
                 info['div_status'] = "已除息"
         else:
-            info['ex_date_str'] = "尚未公告 / 無數據"
+            info['ex_date_str'] = "尚未公告"
             info['div_status'] = "N/A"
 
-        # [修正點] AI 預估填息日 - 加入市場因素與趨勢因子
+        # 2. 預估填息日 (修正邏輯：加入市場係數)
+        # 填息難度公式 = (缺口 / 每日波動) * 市場係數
+        # 市場係數：多頭=2.0 (一般難度), 空頭=4.5 (高難度)
+        market_factor = 2.0 if is_bull_trend else 4.5
+        
         if dividend and dividend > 0 and atr > 0:
-            # 基礎理論天數 = 缺口 / 平均波動
-            base_days = dividend / atr
+            raw_days = dividend / atr
+            # 確保至少有一天，並加上市場係數
+            est_days = int(max(1, raw_days * market_factor))
             
-            # 市場摩擦係數 (Market Reality Factor)
-            # 股價不會直線填息，通常是進三退二。
-            # 多頭趨勢(is_bull_trend=True)：填息較快，係數 2.5 (代表波折較少)
-            # 空頭趨勢(is_bull_trend=False)：填息較慢，係數 5.0 (代表需要更長時間整理)
-            trend_factor = 2.5 if is_bull_trend else 5.0
+            # 如果天數過長
+            days_display = est_days if est_days < 250 else "需長期抗戰 (>1年)"
             
-            # 計算最終天數，並確保至少 1 天
-            estimated_days = int(base_days * trend_factor)
-            days_display = max(1, estimated_days) # 避免出現 0 天
-            
-            # 如果天數過長，顯示提示
-            if days_display > 200: days_display = "需長期抗戰 (>200天)"
-            
-            fill_date = datetime.now().date() + timedelta(days=days_display if isinstance(days_display, int) else 200)
-            
+            if isinstance(days_display, int):
+                fill_date = datetime.now().date() + timedelta(days=days_display)
+                info['est_fill_date'] = fill_date.strftime('%Y-%m-%d')
+            else:
+                info['est_fill_date'] = "無法預估"
+                
             info['fill_days'] = days_display
-            info['est_fill_date'] = fill_date.strftime('%Y-%m-%d') if isinstance(days_display, int) else "N/A"
-            info['dividend'] = dividend
+            info['dividend'] = f"{dividend} {div_note}"
         else:
             info['fill_days'] = "N/A"
             info['est_fill_date'] = "N/A"
             info['dividend'] = 0
 
-        # 2. EPS 與 合理股價
+        # 3. EPS 與 合理股價
         info['eps'] = t_info.get('trailingEps', None)
         if info['eps'] is None: info['eps'] = t_info.get('forwardEps', 0)
         
@@ -442,23 +446,20 @@ if run_btn:
 
             atr = df_d['ATR'].iloc[-1] if not pd.isna(df_d['ATR'].iloc[-1]) else today['Close']*0.02
             
-            # --- 判斷趨勢：用以優化填息天數 ---
-            ma60 = df_d['MA60'].iloc[-1] if 'MA60' in df_d.columns and not pd.isna(df_d['MA60'].iloc[-1]) else today['Close']
-            is_bull_trend = today['Close'] > ma60
+            # 判斷多空趨勢 (用季線 58MA 或 60MA)
+            ma60_val = today['MA60'] if 'MA60' in today else today['Close']
+            is_bull_trend = today['Close'] > ma60_val
 
-            # 獲取基本面與除息資訊 (傳入趨勢判斷)
+            # 獲取基本面與除息資訊 (傳入趨勢判斷填息難度)
             fund_info = get_fundamental_info(ticker_obj, today['Close'], atr, is_bull_trend)
 
             targets = []
-            # 修改：時間預估邏輯，加入市場摩擦係數 (Reality Factor = 2.5)
-            # 公式：(距離 / 每日波動) * 係數 -> 讓時間變長，更保守
             reality_factor = 2.5
             for mult, win, atr_ratio in [(1.05, "85%", 0.5), (1.10, "65%", 0.4), (1.20, "40%", 0.3)]:
                 p = today['Close'] * mult
                 dist = p - today['Close']
                 daily_move = atr * atr_ratio
                 
-                # 計算基礎天數，並乘上摩擦係數
                 raw_days = dist / daily_move if daily_move > 0 else 5
                 adjusted_days = max(5, int(raw_days * reality_factor)) 
                 
@@ -504,15 +505,15 @@ if run_btn:
             </div>
             """, unsafe_allow_html=True)
             
-            # --- 新增：基本面價值博弈區 ---
+            # --- 新增：基本面價值博弈區 (優化版) ---
             st.markdown(f"""
             <div class='fundamental-zone'>
                 <h4>💎 價值博弈與股息 (Fundamental & Dividend)</h4>
-                <p><b>除息情報：</b></p>
+                <p><b>除息情報 (Latest Action)：</b></p>
                 <ul>
                     <li>📅 <b>最近除息日：</b> {fund_info['ex_date_str']} ({fund_info['div_status']}) </li>
-                    <li>💵 <b>現金股利 (本次)：</b> {fund_info['dividend']} 元</li>
-                    <li>⏳ <b>AI 預估填息時間：</b> {fund_info['fill_days']} 天 (依據 ATR 波動率與趨勢係數推算，預計 {fund_info['est_fill_date']} 填息完成)</li>
+                    <li>💵 <b>現金股利：</b> {fund_info['dividend']} 元</li>
+                    <li>⏳ <b>AI 預估填息時間：</b> {fund_info['fill_days']} 天 (依據 ATR 波動率與市場趨勢係數推算，預計 {fund_info['est_fill_date']} 填息完成)</li>
                 </ul>
                 <hr style='border-top: 1px dashed #ff9800;'>
                 <p><b>合理股價 (Fair Value)：</b></p>
@@ -533,25 +534,33 @@ if run_btn:
             
             st.markdown("---")
             
-            # --- 修改：均線特攻隊 圖表化與定義更新 (修復圖表不顯示問題) ---
+            # --- 修改：均線特攻隊 圖表化與定義更新 (修復版) ---
             st.markdown("#### 📏 均線特攻隊 (MA Special Squad)")
             
-            # 1. 整理圖表數據：只取最近 60 天，避免線條擠壓
-            # 2. 指定需要的欄位，只畫重要的線 (7, 34, 58) 
-
-[Image of moving average crossover]
-
+            # 1. 整理圖表數據：加入資料清洗，避免 NaN 導致圖表空白
             chart_cols = ['Close', 'SMA7', 'SMA34', 'SMA58']
-            chart_df = df_d[chart_cols].iloc[-60:].copy() 
+            # 檢查欄位是否存在 (防止新股無季線報錯)
+            existing_cols = [c for c in chart_cols if c in df_d.columns]
             
-            # [重要修復] 移除時區資訊，解決 Streamlit Altair 圖表錯誤
-            if chart_df.index.tz is not None:
-                chart_df.index = chart_df.index.tz_localize(None)
+            if len(existing_cols) > 1:
+                chart_df = df_d[existing_cols].iloc[-60:].copy() 
+                chart_df = chart_df.dropna() # 關鍵修復：移除 NaN 資料
+                
+                # 自訂顏色對應 (黑, 紅, 綠, 藍)
+                colors = []
+                if 'Close' in existing_cols: colors.append("#000000")
+                if 'SMA7' in existing_cols: colors.append("#FF0000")
+                if 'SMA34' in existing_cols: colors.append("#00AA00")
+                if 'SMA58' in existing_cols: colors.append("#0000FF")
+                
+                if not chart_df.empty:
+                    st.line_chart(chart_df, color=colors)
+                    st.caption("黑色:股價 | 紅色:7MA(攻擊) | 綠色:34MA(生命線) | 藍色:58MA(季線)")
+                else:
+                    st.warning("⚠️ 近期資料含有空值或長度不足，無法繪製均線圖表。")
+            else:
+                st.warning("⚠️ 此股票歷史資料不足，無法計算 34/58 MA。")
 
-            st.line_chart(chart_df, color=["#000000", "#FF0000", "#00AA00", "#0000FF"])
-            st.caption("黑色:股價 | 紅色:7MA(攻擊) | 綠色:34MA(生命線) | 藍色:58MA(季線)")
-
-            # 更新 Metrics 定義：34MA 為生命線
             cols = st.columns(6)
             ma_list = [7, 22, 34, 58, 116, 224]
             names = ["攻擊", "輔助", "生命", "季線", "半年", "年線"]
@@ -567,7 +576,7 @@ if run_btn:
 
             st.markdown("""
             <div class='strategy-note'>
-            <b>⚔️ 均線戰略解讀 (V25.6)：</b><br>
+            <b>⚔️ 均線戰略解讀 (V25.7)：</b><br>
             • <b>7MA (攻擊線)：</b> 紅色線，短線噴出的關鍵，K線在紅線上為極強勢。<br>
             • <b>34MA (生命線)：</b> 綠色線，費波那契關鍵數，主力波段護盤的核心防線，跌破需高度警戒。<br>
             • <b>58MA (季線)：</b> 藍色線，中期趨勢指標，藍線上彎且股價在其上，為波段多頭。
