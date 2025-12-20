@@ -515,9 +515,6 @@ if run_btn:
             
             # 1. 整理圖表數據：只取最近 60 天，避免線條擠壓
             # 2. 指定需要的欄位，只畫重要的線 (7, 34, 58) 
-
-[Image of moving average crossover]
-
             chart_cols = ['Close', 'SMA7', 'SMA34', 'SMA58']
             chart_df = df_d[chart_cols].iloc[-60:].copy() 
             
