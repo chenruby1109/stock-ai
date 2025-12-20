@@ -22,17 +22,18 @@ st.markdown("""
     .advice-title { font-weight: bold; color: #0d47a1; font-size: 18px; margin-bottom: 5px; display: block; }
     .buy-zone { background-color: #e8f5e9; padding: 15px; border-radius: 8px; border-left: 5px solid #4caf50; margin-top: 20px; }
     .wave-tag { font-size: 14px; background-color: #fff3cd; padding: 2px 6px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold; color: #856404; }
+    .strategy-note { font-size: 14px; color: #555; background-color: #f1f3f6; padding: 10px; border-radius: 5px; margin-top: 5px; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.3 SOP修正版)</p>', unsafe_allow_html=True)
+st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.4 券商優化版)</p>', unsafe_allow_html=True)
 
 # --- 側邊欄 ---
 with st.sidebar:
     st.header("🔍 個股戰情室")
     stock_input = st.text_input("輸入代號 (如 7749)", value="7749")
     run_btn = st.button("🚀 啟動全維度分析", type="primary")
-    st.info("💡 V25.3 更新：修正 SOP 訊號邏輯，導入 Parabolic SAR 指標。")
+    st.info("💡 V25.4 更新：新增均線戰略解說、優化關鍵券商判斷邏輯。")
 
 # --- 1. 資料獲取 ---
 @st.cache_data(ttl=3600)
@@ -74,71 +75,79 @@ def get_data(symbol):
             continue
     return None, None, None, None
 
-# --- 新增: SAR 計算函數 ---
-def calculate_sar(high, low, accel=0.02, max_accel=0.2):
-    """計算拋物線指標 (Parabolic SAR)"""
-    sar = np.zeros(len(high))
-    trend = np.zeros(len(high)) # 1為多, -1為空
-    ep = np.zeros(len(high)) # 極值
-    af = np.zeros(len(high)) # 加速因子
+# --- 新增: 關鍵券商判斷邏輯 (模擬主力慣性) ---
+def get_key_brokers(symbol):
+    """根據股票代號屬性，回傳該族群常見的控盤主力"""
+    code = ''.join(filter(str.isdigit, symbol))
     
-    # 初始值設定
+    if not code: return ["外資主力", "投信總部", "自營商"]
+
+    # 權值股 (台積電、聯發科、鴻海等) -> 外資主導
+    if code in ['2330', '2454', '2317', '2308', '2303']:
+        return ["摩根大通", "高盛亞洲", "美林", "台灣摩根"]
+    
+    # 金融股 -> 外資與官股
+    elif code.startswith('28'):
+        return ["台灣匯立", "花旗環球", "元大總公司", "臺銀證券"]
+    
+    # 興櫃與新創 (7開頭, 6開頭) -> 本土主力與隔日沖大戶
+    elif code.startswith('7') or code.startswith('6') or code.startswith('8'):
+        return ["凱基台北", "富邦建國", "凱基松山", "元大土城永寧"]
+    
+    # 傳產與其他 -> 綜合
+    else:
+        return ["元大台北", "凱基信義", "統一", "群益金鼎"]
+
+# --- SAR 計算函數 ---
+def calculate_sar(high, low, accel=0.02, max_accel=0.2):
+    sar = np.zeros(len(high))
+    trend = np.zeros(len(high))
+    ep = np.zeros(len(high))
+    af = np.zeros(len(high))
     trend[0] = 1 
     sar[0] = low[0]
     ep[0] = high[0]
     af[0] = accel
-    
     for i in range(1, len(high)):
-        # 計算新的 SAR
         sar[i] = sar[i-1] + af[i-1] * (ep[i-1] - sar[i-1])
-        
-        # 趨勢反轉判斷
-        if trend[i-1] == 1: # 目前多頭
-            if low[i] < sar[i]: # 破線，轉空
+        if trend[i-1] == 1:
+            if low[i] < sar[i]:
                 trend[i] = -1
                 sar[i] = ep[i-1]
                 ep[i] = low[i]
                 af[i] = accel
-            else: # 續多
+            else:
                 trend[i] = 1
-                if high[i] > ep[i-1]: # 創新高
+                if high[i] > ep[i-1]:
                     ep[i] = high[i]
                     af[i] = min(af[i-1] + accel, max_accel)
                 else:
                     ep[i] = ep[i-1]
                     af[i] = af[i-1]
-                # SAR 不能高於前兩根K線的最低價
                 sar[i] = min(sar[i], low[i-1])
                 if i > 1: sar[i] = min(sar[i], low[i-2])
-                
-        else: # 目前空頭
-            if high[i] > sar[i]: # 突破，轉多
+        else:
+            if high[i] > sar[i]:
                 trend[i] = 1
                 sar[i] = ep[i-1]
                 ep[i] = high[i]
                 af[i] = accel
-            else: # 續空
+            else:
                 trend[i] = -1
-                if low[i] < ep[i-1]: # 創新低
+                if low[i] < ep[i-1]:
                     ep[i] = low[i]
                     af[i] = min(af[i-1] + accel, max_accel)
                 else:
                     ep[i] = ep[i-1]
                     af[i] = af[i-1]
-                # SAR 不能低於前兩根K線的最高價
                 sar[i] = max(sar[i], high[i-1])
                 if i > 1: sar[i] = max(sar[i], high[i-2])
-                
     return sar
 
 # --- 2. 指標計算 ---
 def calc_indicators(df):
     if df is None or df.empty: return df
-    
     rows = len(df)
-    
-    # 計算 SAR (新增)
-    # 確保資料足夠，否則填 NaN
     if rows > 5:
         df['SAR'] = calculate_sar(df['High'].values, df['Low'].values)
     else:
@@ -321,7 +330,10 @@ if run_btn:
             vol_ma5 = df_d['Volume'].rolling(5).mean().iloc[-1]
             check['vol_ratio'] = round(today['Volume'] / vol_ma5, 1) if vol_ma5 > 0 else 0
             check['is_vol_surge'] = check['vol_ratio'] > 1.5
-            check['main_force'] = ["摩根大通", "台灣摩根", "凱基台北"]
+            
+            # 使用新邏輯取得關鍵券商
+            check['main_force'] = get_key_brokers(clean_symbol)
+            
             turnover = today['Close'] * today['Volume']
             check['warrant_5m'] = (turnover > 30000000) and (today['Close'] > prev['Close'])
             kd_low = today['K'] < 50
@@ -329,9 +341,8 @@ if run_btn:
             check['is_gulu'] = kd_low and k_hook
             check['is_high_c'] = (df_d['K'].rolling(10).max().iloc[-1] > 70) and (40 <= today['K'] <= 60)
             
-            # --- 核心 SOP 修正 ---
-            # 定義：MACD翻紅 AND KD金叉 AND 股價站上SAR (SAR轉多)
-            sar_val = today.get('SAR', np.inf) # 若無SAR則設為無限大(視為空)
+            # SOP 修正
+            sar_val = today.get('SAR', np.inf) 
             check['is_sop'] = (prev['MACD_Hist'] <= 0 and today['MACD_Hist'] > 0) and \
                               (today['Close'] > sar_val) and \
                               (prev['K'] < prev['D'] and today['K'] > today['D'])
@@ -366,7 +377,7 @@ if run_btn:
             
             st.markdown(f"""
             <div class='ai-advice'>
-                <h4>🤖 AI 總司令戰略建議 (Personalized V25.3)</h4>
+                <h4>🤖 AI 總司令戰略建議 (Personalized V25.4)</h4>
                 {ai_advice}
             </div>
             """, unsafe_allow_html=True)
@@ -403,6 +414,17 @@ if run_btn:
                     val_str = f"{val:.1f}"
                 cols[i].metric(f"{ma}MA ({names[i]})", val_str, status)
 
+            # 新增戰略說明區塊
+            st.markdown("""
+            <div class='strategy-note'>
+            <b>⚔️ 均線戰略解讀：</b><br>
+            • <b>7MA (攻擊線)：</b> 短線噴出的關鍵，跌破代表攻擊暫停，適合極短線進出。<br>
+            • <b>22MA (月線/生命線)：</b> 波段多空的分界，主力護盤的第一道防線，站上偏多，跌破偏空。<br>
+            • <b>58MA (季線)：</b> 中期趨勢指標，法人建倉成本區，季線上彎助漲。<br>
+            • <b>116MA/224MA (半年/年線)：</b> 長線牛熊分界，跌破轉空，站上確認大趨勢翻多。
+            </div>
+            """, unsafe_allow_html=True)
+
             st.markdown("---")
             col_f, col_b = st.columns([1, 1])
             with col_f:
@@ -432,7 +454,8 @@ if run_btn:
             with cc1:
                 icon = "✅" if check['is_vol_surge'] else "❌"
                 st.markdown(f"<div class='check-item'>{icon} 成交量: {check['vol_ratio']}倍</div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='check-item'>🏦 主力: {', '.join(check['main_force'])}</div>", unsafe_allow_html=True)
+                # 使用新的個別化券商清單
+                st.markdown(f"<div class='check-item'>🏦 觀察主力: {', '.join(check['main_force'])}</div>", unsafe_allow_html=True)
                 icon = "✅" if check['warrant_5m'] else "❌"
                 st.markdown(f"<div class='check-item'>{icon} 權證>500萬</div>", unsafe_allow_html=True)
             with cc2:
