@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import requests
 import time
-from scipy.signal import argrelextrema 
+from scipy.signal import argrelextrema
 
 # --- 網頁設定 ---
 st.set_page_config(page_title="Miniko AI 戰略指揮室", page_icon="⚡", layout="wide")
@@ -21,17 +21,18 @@ st.markdown("""
     .advice-section { margin-bottom: 15px; }
     .advice-title { font-weight: bold; color: #0d47a1; font-size: 18px; margin-bottom: 5px; display: block; }
     .buy-zone { background-color: #e8f5e9; padding: 15px; border-radius: 8px; border-left: 5px solid #4caf50; margin-top: 20px; }
+    .wave-tag { font-size: 14px; background-color: #fff3cd; padding: 2px 6px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold; color: #856404; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V24.0 超級更新版)</p>', unsafe_allow_html=True)
+st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.0 波浪微結構版)</p>', unsafe_allow_html=True)
 
 # --- 側邊欄 ---
 with st.sidebar:
     st.header("🔍 個股戰情室")
     stock_input = st.text_input("輸入代號 (如 2330)", value="2330")
     run_btn = st.button("🚀 啟動全維度分析", type="primary")
-    st.info("💡 V24 特點：新增買入價位建議、修正目標時間算法(更務實)。")
+    st.info("💡 V25 特點：新增 30分K 監測，啟用艾略特微波浪 (Micro-Wave) 識別演算法。")
 
 # --- 1. 資料獲取 ---
 @st.cache_data(ttl=3600)
@@ -60,24 +61,28 @@ def get_data(symbol):
     ticker = yf.Ticker(ticker_symbol)
     try:
         df_d = ticker.history(period="2y")
+        # 增加 30分K 資料
         df_60m = ticker.history(period="1mo", interval="60m")
+        df_30m = ticker.history(period="1mo", interval="30m") 
+        
         if df_d.empty:
             ticker_symbol = symbol + ".TWO"
             ticker = yf.Ticker(ticker_symbol)
             df_d = ticker.history(period="2y")
             df_60m = ticker.history(period="1mo", interval="60m")
-        return df_d, df_60m, ticker_symbol
-    except: return None, None, None
+            df_30m = ticker.history(period="1mo", interval="30m")
+            
+        return df_d, df_60m, df_30m, ticker_symbol
+    except: return None, None, None, None
 
 # --- 2. 指標計算 ---
 def calc_indicators(df):
     if df is None or df.empty: return df
     
-    mas = [5, 10, 20, 60, 120, 240] # 改用更標準的均線參數計算支撐
+    mas = [5, 10, 20, 60, 120, 240]
     for ma in mas:
         df[f'MA{ma}'] = df['Close'].rolling(ma).mean()
     
-    # 另外算 MA7, MA22 等給均線特攻隊用
     special_mas = [7, 22, 34, 58, 116, 224]
     for ma in special_mas:
         df[f'SMA{ma}'] = df['Close'].rolling(ma).mean()
@@ -112,28 +117,59 @@ def calc_indicators(df):
     
     return df
 
-# --- 3. 波浪 ---
-def get_advanced_wave(df, timeframe="日"):
-    if len(df) < 120: return "資料不足"
+# --- 3. 微波浪識別 (核心升級) ---
+def get_micro_wave(df, timeframe="日"):
+    if df is None or len(df) < 60: return "N/A"
+    
     price = df['Close'].iloc[-1]
-    recent_high = df['High'].iloc[-250:].max() if timeframe=="日" else df['High'].max()
+    ma5 = df['MA5'].iloc[-1]
+    ma10 = df['MA10'].iloc[-1]
     ma20 = df['MA20'].iloc[-1]
     ma60 = df['MA60'].iloc[-1]
-    ma240 = df.get('MA240', df['MA60']).iloc[-1]
-    k_val = df['K'].iloc[-1]
     
-    if timeframe == "日":
-        if price >= recent_high * 0.98: return "第 3 浪 (主升噴出)"
-        elif price > ma240 and price > ma60 and price < ma20: return "第 4 浪 (多頭修正)"
-        elif price > ma20 and k_val < 50: return "第 1 浪 (初升段)"
-        elif price < ma240: return "空頭修正波 (A/B/C)"
-        else: return "第 2 浪 (回檔整理)"
-    else: 
-        if price > ma20 and k_val > 80: return "3-3 (短線急漲)"
-        elif price < ma20 and k_val < 20: return "4-C (修正末端)"
-        elif price > ma60 and price < ma20: return "4-B (修正反彈)"
-        elif price > ma20 and k_val < 50: return "3-1 (短線起漲)"
-        else: return "盤整待變"
+    k = df['K'].iloc[-1]
+    prev_k = df['K'].iloc[-2]
+    d = df['D'].iloc[-1]
+    
+    hist = df['MACD_Hist'].iloc[-1]
+    prev_hist = df['MACD_Hist'].iloc[-2]
+    
+    # 判斷大趨勢 (Major Trend)
+    trend = "Bull" if price > ma60 else "Bear"
+    
+    wave_label = ""
+    
+    if trend == "Bull":
+        # 多頭架構下的波浪
+        if price > ma20:
+            # 價格在月線之上 (進攻浪)
+            if hist > 0 and hist > prev_hist:
+                # 動能增強
+                if k > 80: wave_label = "3-5 (噴出末段)"
+                else: wave_label = "3-3 (主升急漲)"
+            elif hist > 0 and hist < prev_hist:
+                # 動能減弱
+                wave_label = "3-a (高檔震盪)"
+            else:
+                # MACD 綠柱但價格仍強
+                wave_label = "3-1 (初升/轉折)"
+        else:
+            # 價格跌破月線 (修正浪)
+            if price > ma60:
+                if k < 20: wave_label = "4-c (修正末端)"
+                elif k < prev_k: wave_label = "4-a (初跌修正)"
+                else: wave_label = "4-b (反彈逃命)"
+    else:
+        # 空頭架構
+        if price < ma20:
+            if k < 20: wave_label = "C-5 (趕底急殺)"
+            else: wave_label = "C-3 (主跌段)"
+        else:
+            # 反彈
+            if k > 80: wave_label = "B-c (反彈高點)"
+            else: wave_label = "B-a (跌深反彈)"
+
+    return wave_label
 
 # --- 4. 費波那契 ---
 def get_fibonacci(df):
@@ -148,71 +184,71 @@ def get_fibonacci(df):
         "trend_high": high, "trend_low": low
     }
 
-# --- 5. 深度戰略生成 ---
-def generate_deep_strategy(check, wave_d, wave_60, fib, df):
-    price = df['Close'].iloc[-1]
+# --- 5. 深度戰略生成 (個人化升級) ---
+def generate_deep_strategy(stock_name, price, check, wave_d, wave_60, wave_30, fib, df):
     ma20 = df['MA20'].iloc[-1]
-    ma60 = df['MA60'].iloc[-1]
     bias = df['BIAS_20'].iloc[-1]
-    bb_pct = df['BB_Pct'].iloc[-1]
+    vol_ratio = check['vol_ratio']
     
     sections = []
     
-    # 1. 戰略總評
-    trend_desc = ""
-    if "3 浪" in wave_d:
-        trend_desc = "目前處於極強勢的『主升段 (第3浪)』，多頭動能充沛，是獲利最快、也是最肥美的一段。"
-    elif "4 浪" in wave_d:
-        trend_desc = "目前進入『多頭修正 (第4浪)』，股價回測月線或季線支撐，屬於上漲過程中的換手整理，不必過度恐慌。"
-    elif "空頭" in wave_d:
-        trend_desc = "目前處於『空頭架構』，股價跌破長期均線，上方壓力重重，任何反彈皆視為逃命波。"
+    # 1. 個性化戰略總評
+    advice_intro = ""
+    if "3-" in wave_d and "3-" in wave_60:
+        advice_intro = f"【{stock_name}】目前日線與60分線產生『共振噴出』，屬於極強勢的多頭格局。價格 {price} 站穩所有均線，這是最容易獲利的階段。"
+    elif "4-" in wave_d and "3-" in wave_30:
+        advice_intro = f"【{stock_name}】日線目前正在進行 {wave_d} 的修正，但 30分K 出現 {wave_30} 的短線轉強訊號，這意味著『修正可能結束，主力正在嘗試止跌』。"
+    elif "C-" in wave_d:
+        advice_intro = f"【{stock_name}】目前處於空頭下跌波 {wave_d}，上方壓力重重，除非站回月線 {ma20:.2f}，否則任何上漲都視為反彈。"
     else:
-        trend_desc = "目前處於『區間震盪』，方向不明確，多空雙方正在角力。"
-        
+        advice_intro = f"【{stock_name}】目前多空交戰，日線 {wave_d} 與短線訊號方向不一致，建議縮小部位，採取區間操作。"
+
     sections.append(f"""
     <div class='advice-section'>
-        <span class='advice-title'>📡 戰略總評 (Strategy Overview)</span>
-        {trend_desc}<br>
-        日線波浪定位為【{wave_d}】，60分K短線波浪為【{wave_60}】。長短週期若共振向上，則爆發力最強；若背離，則需小心短線回檔。
+        <span class='advice-title'>📡 {stock_name} 專屬戰略總評</span>
+        {advice_intro}<br><br>
+        <span class='wave-tag'>日線：{wave_d}</span> 
+        <span class='wave-tag'>60K：{wave_60}</span> 
+        <span class='wave-tag'>30K：{wave_30}</span>
     </div>
     """)
     
-    # 2. 籌碼與動能
+    # 2. 籌碼與動能 (結合量能與狀態)
     chips_desc = []
+    if vol_ratio > 2.0:
+        chips_desc.append(f"🔥 **爆量攻擊：** 今日成交量是五日均量的 {vol_ratio} 倍！這通常是『{wave_30}』轉折的確認訊號，主力攻擊意願極強。")
     if check['warrant_5m']:
-        chips_desc.append("🔥 **權證大戶進場：** 偵測到單日權證做多金額預估超過 500 萬，這通常代表『聰明錢』在押寶短線噴出，主力作多意圖強烈。")
-    if check['is_buy_streak']:
-        chips_desc.append("🛡️ **主力護盤：** 關鍵主力已連續買超 3~10 天，籌碼換手成功，底部有強立支撐。")
+        chips_desc.append("💰 **權證大戶進場：** 偵測到預估超過 500 萬的權證買盤，聰明錢正在押寶短線波動。")
     if check['is_sop']:
-        chips_desc.append("✅ **SOP 訊號亮燈：** 技術面出現 MACD 翻紅 + KD 金叉 + SAR 轉多，三線合一，是標準的起漲訊號。")
+        chips_desc.append("✅ **SOP 三線合一：** 技術面出現 MACD 翻紅 + KD 金叉 + 站上攻擊線，這是標準的起漲訊號。")
+    
     if not chips_desc:
-        chips_desc.append("⚠️ **籌碼中性：** 目前未偵測到顯著的主力或權證大單，股價波動主要隨大盤或散戶情緒起伏。")
+        chips_desc.append(f"⚠️ **量能觀望：** 目前成交量平淡 ({vol_ratio}倍)，主力尚未表態，股價將隨波浪慣性 {wave_60} 漂流。")
         
     sections.append(f"""
     <div class='advice-section'>
-        <span class='advice-title'>💰 籌碼與動能 (Money Flow)</span>
+        <span class='advice-title'>💰 動能深度解析</span>
         {'<br>'.join(chips_desc)}
     </div>
     """)
     
-    # 3. 操作劇本
+    # 3. 操作劇本 (針對波浪位置)
     action_desc = ""
-    if bb_pct > 1.0:
-        action_desc = "🔴 **賣出訊號 (布林過熱)：** 股價衝出布林上軌，正乖離過大。根據統計，這時候追高風險極大，隔日拉回機率高達 75%。建議持有者分批獲利了結，空手者切勿追價。"
-    elif bb_pct < 0.0:
-        action_desc = "🟢 **買進訊號 (布林超跌)：** 股價跌破布林下軌，負乖離過大。根據統計，隔日反彈機率約 65%，可嘗試搶短，停損設今日低點。"
-    elif bias > 15:
-        action_desc = f"⚠️ **風險警示：** 月線乖離率達 {bias:.2f}%，就像橡皮筋拉到極限，隨時會『彈回來』修正。建議等待回測 5日線 或 10日線 再進場。"
-    elif "3 浪" in wave_d:
-        action_desc = "🚀 **順勢操作：** 既然是主升段，操作策略應為『拉回找買點』。只要不破 10日線，建議波段單續抱，直到爆量長黑或跌破月線為止。"
-    elif "4 浪" in wave_d:
-        action_desc = f"📉 **低接策略：** 修正波適合『逢低佈局』。建議在 0.382 黃金分割位 ({fib['0.382']:.2f}) 或 季線 ({ma60:.2f}) 附近分批建立部位。"
+    # 針對乖離的客製化
+    bias_warning = f"(目前乖離率 {bias:.1f}% 偏高，勿追價)" if bias > 8 else "(乖離率適中，安全)"
+
+    if "3-3" in wave_60 or "3-3" in wave_30:
+        action_desc = f"🚀 **追價/加碼策略：** 短線處於『3-3 主升急漲段』{bias_warning}。若手中無部位，可利用 30分K 回測 5MA 時切入；若有部位，續抱直到跌破 60分K 的 10MA。"
+    elif "4-c" in wave_60 or "4-c" in wave_30:
+        action_desc = f"📉 **抄底策略：** 短線進入『4-c 修正末端』，這是盈虧比最好的買點。建議在 {fib['0.382']:.2f} (0.382支撐) 附近觀察，若出現下影線或紅K，大膽進場。"
+    elif "B-" in wave_d:
+        action_desc = "👀 **逃命策略：** 日線處於 B 波反彈，建議逢高減碼，不要留戀，上方套牢壓力大。"
     else:
-        action_desc = "👀 **觀望策略：** 目前多空不明，建議多看少做，等待突破箱型整理區間再順勢操作。"
+        action_desc = "🛡️ **防守策略：** 目前趨勢不明，建議以月線為最後防守點，多看少做。"
 
     sections.append(f"""
     <div class='advice-section'>
-        <span class='advice-title'>📝 操作劇本 (Action Plan)</span>
+        <span class='advice-title'>📝 精準操作劇本</span>
         {action_desc}
     </div>
     """)
@@ -221,20 +257,24 @@ def generate_deep_strategy(check, wave_d, wave_60, fib, df):
 
 # --- 主程式 ---
 if run_btn:
-    with st.spinner("正在進行 AI 深度運算 (波浪/布林/費波)..."):
+    with st.spinner("正在進行微結構波浪運算 (Daily/60m/30m)..."):
         clean_symbol = stock_input.replace('.TW', '').replace('.TWO', '')
         stock_name = get_stock_name(clean_symbol)
-        df_d, df_60, ticker_code = get_data(clean_symbol)
+        df_d, df_60, df_30, ticker_code = get_data(clean_symbol)
         
         if df_d is None or len(df_d) < 240:
-            st.error("❌ 資料不足。")
+            st.error("❌ 資料不足或代號錯誤。")
         else:
+            # 計算指標
             df_d = calc_indicators(df_d)
             if df_60 is not None: df_60 = calc_indicators(df_60)
+            if df_30 is not None: df_30 = calc_indicators(df_30)
             
-            # 分析
-            wave_d = get_advanced_wave(df_d, "日")
-            wave_60 = get_advanced_wave(df_60, "60分") if df_60 is not None else "N/A"
+            # 波浪分析 (三週期)
+            wave_d = get_micro_wave(df_d, "日")
+            wave_60 = get_micro_wave(df_60, "60分") if df_60 is not None else "N/A"
+            wave_30 = get_micro_wave(df_30, "30分") if df_30 is not None else "N/A"
+            
             fib = get_fibonacci(df_d)
             
             # 檢核
@@ -261,24 +301,22 @@ if run_btn:
             check['consecutive'] = consecutive
             check['is_buy_streak'] = 3 <= consecutive <= 10
 
-            # 預計達標時間 (修正版：更保守)
+            # 預計達標時間
             atr = df_d['ATR'].iloc[-1]
             targets = []
-            # 係數調整：不再假設每天漲1個ATR，而是每天只漲 0.3~0.5個 ATR (考慮震盪)
             for mult, win, atr_ratio in [(1.05, "85%", 0.5), (1.10, "65%", 0.4), (1.20, "40%", 0.3)]:
                 p = today['Close'] * mult
                 dist = p - today['Close']
-                daily_move = atr * atr_ratio # 預估每日有效漲幅
+                daily_move = atr * atr_ratio
                 days = max(2, int(dist / daily_move)) if daily_move > 0 else 10
                 targets.append({"p": p, "w": win, "days": days})
 
-            # 買入價位計算 (Buy Zones)
-            # 激進: 5日線 或 0.2回檔
+            # 買入價位
             buy_aggressive = max(today['MA5'], fib['0.200'])
-            # 保守: 20日線 或 0.382回檔
             buy_conservative = max(today['MA20'], fib['0.382'])
 
-            ai_advice = generate_deep_strategy(check, wave_d, wave_60, fib, df_d)
+            # 生成個人化 AI 建議
+            ai_advice = generate_deep_strategy(stock_name, today['Close'], check, wave_d, wave_60, wave_30, fib, df_d)
 
             # --- 顯示層 ---
             st.subheader(f"📊 {clean_symbol} {stock_name} 全維度戰略報告")
@@ -286,29 +324,34 @@ if run_btn:
             # AI 總司令
             st.markdown(f"""
             <div class='ai-advice'>
-                <h4>🤖 AI 總司令戰略建議 (Detailed Report)</h4>
+                <h4>🤖 AI 總司令戰略建議 (Personalized V25)</h4>
                 {ai_advice}
             </div>
             """, unsafe_allow_html=True)
             
-            # 買入建議區塊 (New!)
+            # 買入建議區塊
             st.markdown(f"""
             <div class='buy-zone'>
                 <h4>🛒 AI 建議買入價位 (Buy Zones)</h4>
                 <ul>
-                    <li><b>🦁 激進追價區 (Aggressive)：</b> {buy_aggressive:.2f} 元 (約 5日線/0.2強勢回檔) — 適合動能交易者。</li>
-                    <li><b>🐢 保守低接區 (Conservative)：</b> {buy_conservative:.2f} 元 (約 月線/0.382支撐) — 適合波段佈局者。</li>
+                    <li><b>🦁 激進追價區 (Aggressive)：</b> {buy_aggressive:.2f} 元 (約 5日線/0.2強勢回檔) — 適合操作 {wave_30} 的投資人。</li>
+                    <li><b>🐢 保守低接區 (Conservative)：</b> {buy_conservative:.2f} 元 (約 月線/0.382支撐) — 適合佈局 {wave_d} 的投資人。</li>
                 </ul>
             </div>
             """, unsafe_allow_html=True)
             
             st.markdown("---")
 
-            # 波浪與均線
-            c1, c2 = st.columns(2)
-            c1.info(f"🌊 **日線波浪**：{wave_d}")
-            c2.info(f"🌊 **60分波浪**：{wave_60}")
+            # 波浪結構 (三週期並列)
+            st.markdown("#### 🌊 艾略特波浪微結構 (Micro-Structure)")
+            wc1, wc2, wc3 = st.columns(3)
+            wc1.info(f"📅 **日線 (主趨勢)**\n\n# {wave_d}")
+            wc2.warning(f"⏰ **60分K (波段)**\n\n# {wave_60}")
+            wc3.error(f"⚡ **30分K (轉折)**\n\n# {wave_30}")
             
+            st.markdown("---")
+
+            # 均線特攻隊
             st.markdown("#### 📏 均線特攻隊")
             cols = st.columns(6)
             ma_list = [7, 22, 34, 58, 116, 224]
@@ -363,7 +406,7 @@ if run_btn:
                 icon = "✅" if check['is_buy_streak'] else "❌"
                 st.markdown(f"<div class='check-item'>{icon} 連買: {check['consecutive']}天</div>", unsafe_allow_html=True)
 
-            # 目標價 (含修正後時間)
+            # 目標價
             st.markdown("---")
             st.markdown("#### 🎯 預測目標價 (含預估時間)")
             tc1, tc2, tc3 = st.columns(3)
