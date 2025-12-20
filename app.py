@@ -25,16 +25,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.0 波浪微結構版)</p>', unsafe_allow_html=True)
+st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.2 新創強搜版)</p>', unsafe_allow_html=True)
 
 # --- 側邊欄 ---
 with st.sidebar:
     st.header("🔍 個股戰情室")
-    stock_input = st.text_input("輸入代號 (如 2330)", value="2330")
+    stock_input = st.text_input("輸入代號 (如 7749)", value="7749")
     run_btn = st.button("🚀 啟動全維度分析", type="primary")
-    st.info("💡 V25 特點：新增 30分K 監測，啟用艾略特微波浪 (Micro-Wave) 識別演算法。")
+    st.info("💡 V25.2 更新：強化興櫃與新上市股票(如 7749) 的抓取能力。")
 
-# --- 1. 資料獲取 ---
+# --- 1. 資料獲取 (升級版：支援興櫃與新股) ---
 @st.cache_data(ttl=3600)
 def get_stock_name(symbol):
     try:
@@ -54,38 +54,60 @@ def get_stock_name(symbol):
     except: return symbol
 
 def get_data(symbol):
-    if not symbol.endswith(".TW") and not symbol.endswith(".TWO"):
-        ticker_symbol = symbol + ".TW"
-    else:
-        ticker_symbol = symbol
-    ticker = yf.Ticker(ticker_symbol)
-    try:
-        df_d = ticker.history(period="2y")
-        # 增加 30分K 資料
-        df_60m = ticker.history(period="1mo", interval="60m")
-        df_30m = ticker.history(period="1mo", interval="30m") 
+    # 清理代號
+    clean_symbol = symbol.replace('.TW', '').replace('.TWO', '')
+    
+    # 搜尋策略：有些新股(興櫃)在 .TWO，有些在 .TW
+    # 我們輪流嘗試，並且針對新股改用 "max" 週期
+    suffixes = ['.TWO', '.TW'] 
+    
+    for suffix in suffixes:
+        ticker_symbol = clean_symbol + suffix
+        ticker = yf.Ticker(ticker_symbol)
         
-        if df_d.empty:
-            ticker_symbol = symbol + ".TWO"
-            ticker = yf.Ticker(ticker_symbol)
+        try:
+            # 1. 先試 2y
             df_d = ticker.history(period="2y")
-            df_60m = ticker.history(period="1mo", interval="60m")
-            df_30m = ticker.history(period="1mo", interval="30m")
             
-        return df_d, df_60m, df_30m, ticker_symbol
-    except: return None, None, None, None
+            # 2. 如果是空的(可能是新股)，改抓 max (上市至今)
+            if df_d.empty:
+                df_d = ticker.history(period="max")
+            
+            # 3. 如果抓到了資料
+            if not df_d.empty:
+                # 嘗試抓取分鐘資料 (有些冷門興櫃股可能沒有分鐘資料，做容錯)
+                try:
+                    df_60m = ticker.history(period="1mo", interval="60m")
+                    df_30m = ticker.history(period="1mo", interval="30m")
+                except:
+                    df_60m, df_30m = None, None
+                
+                return df_d, df_60m, df_30m, ticker_symbol
+        except:
+            continue
+            
+    return None, None, None, None
 
-# --- 2. 指標計算 ---
+# --- 2. 指標計算 (升級版：容錯處理) ---
 def calc_indicators(df):
     if df is None or df.empty: return df
     
+    # 取得資料長度，避免新股計算長天期均線報錯
+    rows = len(df)
+    
     mas = [5, 10, 20, 60, 120, 240]
     for ma in mas:
-        df[f'MA{ma}'] = df['Close'].rolling(ma).mean()
+        if rows >= ma:
+            df[f'MA{ma}'] = df['Close'].rolling(ma).mean()
+        else:
+            df[f'MA{ma}'] = np.nan # 資料不足填 NaN
     
     special_mas = [7, 22, 34, 58, 116, 224]
     for ma in special_mas:
-        df[f'SMA{ma}'] = df['Close'].rolling(ma).mean()
+        if rows >= ma:
+            df[f'SMA{ma}'] = df['Close'].rolling(ma).mean()
+        else:
+            df[f'SMA{ma}'] = np.nan
 
     df['9_High'] = df['High'].rolling(9).max()
     df['9_Low'] = df['Low'].rolling(9).min()
@@ -111,61 +133,57 @@ def calc_indicators(df):
     df['BB_Pct'] = (df['Close'] - df['BB_Low']) / (df['BB_Up'] - df['BB_Low'])
     
     # 乖離 & ATR
-    df['BIAS_20'] = (df['Close'] - df['MA20']) / df['MA20'] * 100
+    # 容錯：如果沒有 MA20，Bias 設為 0
+    if 'MA20' in df.columns:
+        df['BIAS_20'] = (df['Close'] - df['MA20']) / df['MA20'] * 100
+    else:
+        df['BIAS_20'] = 0
+        
     df['TR'] = np.maximum(df['High'] - df['Low'], np.abs(df['High'] - df['Close'].shift(1)))
     df['ATR'] = df['TR'].rolling(14).mean()
     
     return df
 
-# --- 3. 微波浪識別 (核心升級) ---
+# --- 3. 微波浪識別 ---
 def get_micro_wave(df, timeframe="日"):
-    if df is None or len(df) < 60: return "N/A"
+    if df is None or len(df) < 15: return "資料不足(新股)"
     
     price = df['Close'].iloc[-1]
-    ma5 = df['MA5'].iloc[-1]
-    ma10 = df['MA10'].iloc[-1]
-    ma20 = df['MA20'].iloc[-1]
-    ma60 = df['MA60'].iloc[-1]
+    
+    # 容錯：新股可能沒有 MA60，若無則用當前價格代替，避免報錯
+    ma20 = df['MA20'].iloc[-1] if 'MA20' in df.columns and not pd.isna(df['MA20'].iloc[-1]) else price
+    ma60 = df['MA60'].iloc[-1] if 'MA60' in df.columns and not pd.isna(df['MA60'].iloc[-1]) else price
     
     k = df['K'].iloc[-1]
     prev_k = df['K'].iloc[-2]
-    d = df['D'].iloc[-1]
     
     hist = df['MACD_Hist'].iloc[-1]
     prev_hist = df['MACD_Hist'].iloc[-2]
     
     # 判斷大趨勢 (Major Trend)
-    trend = "Bull" if price > ma60 else "Bear"
+    trend = "Bull" if price >= ma60 else "Bear"
     
     wave_label = ""
     
     if trend == "Bull":
-        # 多頭架構下的波浪
         if price > ma20:
-            # 價格在月線之上 (進攻浪)
             if hist > 0 and hist > prev_hist:
-                # 動能增強
                 if k > 80: wave_label = "3-5 (噴出末段)"
                 else: wave_label = "3-3 (主升急漲)"
             elif hist > 0 and hist < prev_hist:
-                # 動能減弱
                 wave_label = "3-a (高檔震盪)"
             else:
-                # MACD 綠柱但價格仍強
                 wave_label = "3-1 (初升/轉折)"
         else:
-            # 價格跌破月線 (修正浪)
             if price > ma60:
                 if k < 20: wave_label = "4-c (修正末端)"
                 elif k < prev_k: wave_label = "4-a (初跌修正)"
                 else: wave_label = "4-b (反彈逃命)"
     else:
-        # 空頭架構
         if price < ma20:
             if k < 20: wave_label = "C-5 (趕底急殺)"
             else: wave_label = "C-3 (主跌段)"
         else:
-            # 反彈
             if k > 80: wave_label = "B-c (反彈高點)"
             else: wave_label = "B-a (跌深反彈)"
 
@@ -173,8 +191,10 @@ def get_micro_wave(df, timeframe="日"):
 
 # --- 4. 費波那契 ---
 def get_fibonacci(df):
-    high = df['High'].iloc[-120:].max()
-    low = df['Low'].iloc[-120:].min()
+    # 針對新股，取現有資料的最大範圍
+    window = min(len(df), 120)
+    high = df['High'].iloc[-window:].max()
+    low = df['Low'].iloc[-window:].min()
     diff = high - low
     return {
         "0.200": high - (diff * 0.2),
@@ -184,10 +204,11 @@ def get_fibonacci(df):
         "trend_high": high, "trend_low": low
     }
 
-# --- 5. 深度戰略生成 (個人化升級) ---
+# --- 5. 深度戰略生成 ---
 def generate_deep_strategy(stock_name, price, check, wave_d, wave_60, wave_30, fib, df):
-    ma20 = df['MA20'].iloc[-1]
-    bias = df['BIAS_20'].iloc[-1]
+    # 容錯
+    ma20 = df['MA20'].iloc[-1] if 'MA20' in df.columns and not pd.isna(df['MA20'].iloc[-1]) else price
+    bias = df['BIAS_20'].iloc[-1] if 'BIAS_20' in df.columns and not pd.isna(df['BIAS_20'].iloc[-1]) else 0
     vol_ratio = check['vol_ratio']
     
     sections = []
@@ -213,7 +234,7 @@ def generate_deep_strategy(stock_name, price, check, wave_d, wave_60, wave_30, f
     </div>
     """)
     
-    # 2. 籌碼與動能 (結合量能與狀態)
+    # 2. 籌碼與動能
     chips_desc = []
     if vol_ratio > 2.0:
         chips_desc.append(f"🔥 **爆量攻擊：** 今日成交量是五日均量的 {vol_ratio} 倍！這通常是『{wave_30}』轉折的確認訊號，主力攻擊意願極強。")
@@ -232,9 +253,8 @@ def generate_deep_strategy(stock_name, price, check, wave_d, wave_60, wave_30, f
     </div>
     """)
     
-    # 3. 操作劇本 (針對波浪位置)
+    # 3. 操作劇本
     action_desc = ""
-    # 針對乖離的客製化
     bias_warning = f"(目前乖離率 {bias:.1f}% 偏高，勿追價)" if bias > 8 else "(乖離率適中，安全)"
 
     if "3-3" in wave_60 or "3-3" in wave_30:
@@ -262,18 +282,19 @@ if run_btn:
         stock_name = get_stock_name(clean_symbol)
         df_d, df_60, df_30, ticker_code = get_data(clean_symbol)
         
-        if df_d is None or len(df_d) < 240:
-            st.error("❌ 資料不足或代號錯誤。")
+        # ⚠️ 放寬限制：新股可能只有 20~100 天資料，只要 >10 天就允許分析
+        if df_d is None or len(df_d) < 10:
+            st.error(f"❌ 無法獲取 {clean_symbol} 資料。可能是新股上市未滿 10 天或代號錯誤。")
         else:
             # 計算指標
             df_d = calc_indicators(df_d)
-            if df_60 is not None: df_60 = calc_indicators(df_60)
-            if df_30 is not None: df_30 = calc_indicators(df_30)
+            if df_60 is not None and not df_60.empty: df_60 = calc_indicators(df_60)
+            if df_30 is not None and not df_30.empty: df_30 = calc_indicators(df_30)
             
             # 波浪分析 (三週期)
             wave_d = get_micro_wave(df_d, "日")
-            wave_60 = get_micro_wave(df_60, "60分") if df_60 is not None else "N/A"
-            wave_30 = get_micro_wave(df_30, "30分") if df_30 is not None else "N/A"
+            wave_60 = get_micro_wave(df_60, "60分") if df_60 is not None and not df_60.empty else "N/A"
+            wave_30 = get_micro_wave(df_30, "30分") if df_30 is not None and not df_30.empty else "N/A"
             
             fib = get_fibonacci(df_d)
             
@@ -291,7 +312,11 @@ if run_btn:
             k_hook = (today['K'] > prev['K'])
             check['is_gulu'] = kd_low and k_hook
             check['is_high_c'] = (df_d['K'].rolling(10).max().iloc[-1] > 70) and (40 <= today['K'] <= 60)
-            check['is_sop'] = (prev['MACD_Hist'] <= 0 and today['MACD_Hist'] > 0) and (today['Close'] > today['SMA22']) and (prev['K'] < prev['D'] and today['K'] > today['D'])
+            
+            # SOP 容錯 (SMA22 可能不存在)
+            sma22_val = today['SMA22'] if 'SMA22' in today else 0
+            check['is_sop'] = (prev['MACD_Hist'] <= 0 and today['MACD_Hist'] > 0) and (today['Close'] > sma22_val) and (prev['K'] < prev['D'] and today['K'] > today['D'])
+            
             recent = df_d.iloc[-10:]
             is_strong = (recent['Close'] >= recent['Open']) | (recent['Close'] > recent['Close'].shift(1))
             consecutive = 0
@@ -302,7 +327,7 @@ if run_btn:
             check['is_buy_streak'] = 3 <= consecutive <= 10
 
             # 預計達標時間
-            atr = df_d['ATR'].iloc[-1]
+            atr = df_d['ATR'].iloc[-1] if not pd.isna(df_d['ATR'].iloc[-1]) else today['Close']*0.02
             targets = []
             for mult, win, atr_ratio in [(1.05, "85%", 0.5), (1.10, "65%", 0.4), (1.20, "40%", 0.3)]:
                 p = today['Close'] * mult
@@ -311,9 +336,12 @@ if run_btn:
                 days = max(2, int(dist / daily_move)) if daily_move > 0 else 10
                 targets.append({"p": p, "w": win, "days": days})
 
-            # 買入價位
-            buy_aggressive = max(today['MA5'], fib['0.200'])
-            buy_conservative = max(today['MA20'], fib['0.382'])
+            # 買入價位 (容錯：若 MA5/MA20 是 NaN，用 Fib 代替)
+            ma5 = today['MA5'] if 'MA5' in today and not pd.isna(today['MA5']) else fib['0.200']
+            ma20 = today['MA20'] if 'MA20' in today and not pd.isna(today['MA20']) else fib['0.382']
+            
+            buy_aggressive = max(ma5, fib['0.200'])
+            buy_conservative = max(ma20, fib['0.382'])
 
             # 生成個人化 AI 建議
             ai_advice = generate_deep_strategy(stock_name, today['Close'], check, wave_d, wave_60, wave_30, fib, df_d)
@@ -324,7 +352,7 @@ if run_btn:
             # AI 總司令
             st.markdown(f"""
             <div class='ai-advice'>
-                <h4>🤖 AI 總司令戰略建議 (Personalized V25)</h4>
+                <h4>🤖 AI 總司令戰略建議 (Personalized V25.2)</h4>
                 {ai_advice}
             </div>
             """, unsafe_allow_html=True)
@@ -357,9 +385,14 @@ if run_btn:
             ma_list = [7, 22, 34, 58, 116, 224]
             names = ["攻擊", "月線", "轉折", "季線", "半年", "年線"]
             for i, ma in enumerate(ma_list):
-                val = today[f'SMA{ma}']
-                status = "多" if today['Close'] > val else "空"
-                cols[i].metric(f"{ma}MA ({names[i]})", f"{val:.1f}", status)
+                val = today.get(f'SMA{ma}', np.nan)
+                if pd.isna(val):
+                    status = "N/A"
+                    val_str = "N/A"
+                else:
+                    status = "多" if today['Close'] > val else "空"
+                    val_str = f"{val:.1f}"
+                cols[i].metric(f"{ma}MA ({names[i]})", val_str, status)
 
             st.markdown("---")
 
@@ -378,7 +411,7 @@ if run_btn:
             
             with col_b:
                 st.markdown("#### ⚡ 動能與布林解析")
-                bias = today['BIAS_20']
+                bias = today.get('BIAS_20', 0)
                 bias_msg = "橡皮筋拉太緊 (過熱)" if bias > 10 else "橡皮筋過鬆 (超跌)" if bias < -10 else "張力正常"
                 st.metric("乖離率 (BIAS)", f"{bias:.2f} %", bias_msg)
                 
