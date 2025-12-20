@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import requests
 import time
+from datetime import datetime, timedelta
 from scipy.signal import argrelextrema
 
 # --- 網頁設定 ---
@@ -21,20 +22,23 @@ st.markdown("""
     .advice-section { margin-bottom: 15px; }
     .advice-title { font-weight: bold; color: #0d47a1; font-size: 18px; margin-bottom: 5px; display: block; }
     .buy-zone { background-color: #e8f5e9; padding: 15px; border-radius: 8px; border-left: 5px solid #4caf50; margin-top: 20px; }
+    .fundamental-zone { background-color: #fff3e0; padding: 15px; border-radius: 8px; border-left: 5px solid #ff9800; margin-top: 20px; }
     .wave-tag { font-size: 14px; background-color: #fff3cd; padding: 2px 6px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold; color: #856404; }
     .strategy-note { font-size: 14px; color: #555; background-color: #f1f3f6; padding: 10px; border-radius: 5px; margin-top: 5px; }
-    .sop-box { background-color: #fff0f6; border: 1px solid #ffdeeb; border-radius: 8px; padding: 15px; margin-bottom: 10px; }
+    .price-info { font-size: 16px; color: #444; margin-bottom: 15px; }
+    .price-up { color: #d9534f; font-weight: bold; }
+    .price-down { color: #5cb85c; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.4 SOP 強化版)</p>', unsafe_allow_html=True)
+st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.5 全能進化版)</p>', unsafe_allow_html=True)
 
 # --- 側邊欄 ---
 with st.sidebar:
     st.header("🔍 個股戰情室")
-    stock_input = st.text_input("輸入代號 (如 7749)", value="7749")
+    stock_input = st.text_input("輸入代號 (如 2330)", value="2330")
     run_btn = st.button("🚀 啟動全維度分析", type="primary")
-    st.info("💡 V25.4 更新：新增即時股價顯示、SOP 三線合一細項檢測。")
+    st.info("💡 V25.5 更新：新增均線圖表、EPS評價、除息預估填息日。")
 
 # --- 1. 資料獲取 ---
 @st.cache_data(ttl=3600)
@@ -57,7 +61,7 @@ def get_stock_name(symbol):
 
 def get_data(symbol):
     clean_symbol = symbol.replace('.TW', '').replace('.TWO', '')
-    suffixes = ['.TWO', '.TW'] 
+    suffixes = ['.TW', '.TWO'] 
     for suffix in suffixes:
         ticker_symbol = clean_symbol + suffix
         ticker = yf.Ticker(ticker_symbol)
@@ -71,10 +75,74 @@ def get_data(symbol):
                     df_30m = ticker.history(period="1mo", interval="30m")
                 except:
                     df_60m, df_30m = None, None
-                return df_d, df_60m, df_30m, ticker_symbol
+                # 回傳 ticker 物件以便獲取基本面資料
+                return df_d, df_60m, df_30m, ticker 
         except:
             continue
     return None, None, None, None
+
+# --- 新增：基本面與除息資訊獲取 ---
+def get_fundamental_info(ticker, close_price, atr):
+    info = {}
+    try:
+        t_info = ticker.info
+        
+        # 1. 除息資訊
+        ex_date = t_info.get('exDividendDate', None)
+        dividend = t_info.get('dividendRate', 0)
+        
+        if ex_date:
+            ex_dt = datetime.fromtimestamp(ex_date).date()
+            info['ex_date_str'] = ex_dt.strftime('%Y-%m-%d')
+            
+            # 判斷是否已除息
+            if ex_dt > datetime.now().date():
+                info['div_status'] = "即將除息 (股價將修正)"
+            else:
+                info['div_status'] = "已除息"
+        else:
+            info['ex_date_str'] = "尚未公告 / 無數據"
+            info['div_status'] = "N/A"
+
+        # 預估填息日：利用股息 / ATR (平均每日波動)
+        if dividend and dividend > 0 and atr > 0:
+            days_to_fill = int(dividend / atr)
+            # 如果波動太小，天數會過大，設定上限顯示
+            days_display = days_to_fill if days_to_fill < 100 else "需長期抗戰"
+            
+            fill_date = datetime.now().date() + timedelta(days=days_to_fill)
+            info['fill_days'] = days_display
+            info['est_fill_date'] = fill_date.strftime('%Y-%m-%d') if isinstance(days_display, int) else "N/A"
+            info['dividend'] = dividend
+        else:
+            info['fill_days'] = "N/A"
+            info['est_fill_date'] = "N/A"
+            info['dividend'] = 0
+
+        # 2. EPS 與 合理股價
+        info['eps'] = t_info.get('trailingEps', None)
+        if info['eps'] is None: info['eps'] = t_info.get('forwardEps', 0)
+        
+        # 法人目標價
+        info['target_mean'] = t_info.get('targetMeanPrice', 'N/A')
+        info['target_high'] = t_info.get('targetHighPrice', 'N/A')
+        
+        # 計算合理區間 (若無資料則用簡易本益比推估)
+        if info['eps'] and info['eps'] > 0:
+            info['fair_low'] = info['eps'] * 15  # 保守 PE 15
+            info['fair_high'] = info['eps'] * 20 # 積極 PE 20
+        else:
+            info['fair_low'] = 0
+            info['fair_high'] = 0
+            
+    except Exception as e:
+        info = {
+            'ex_date_str': 'N/A', 'div_status': 'N/A', 'fill_days': 'N/A', 
+            'est_fill_date': 'N/A', 'dividend': 0, 'eps': 0, 
+            'target_mean': 'N/A', 'target_high': 'N/A',
+            'fair_low': 0, 'fair_high': 0
+        }
+    return info
 
 # --- 關鍵券商判斷邏輯 ---
 def get_key_brokers(symbol):
@@ -300,10 +368,10 @@ def generate_deep_strategy(stock_name, price, check, wave_d, wave_60, wave_30, f
 
 # --- 主程式 ---
 if run_btn:
-    with st.spinner("正在進行微結構波浪運算 (Daily/60m/30m)..."):
+    with st.spinner("正在進行全維度運算 (Daily/60m/30m/Fundamental)..."):
         clean_symbol = stock_input.replace('.TW', '').replace('.TWO', '')
         stock_name = get_stock_name(clean_symbol)
-        df_d, df_60, df_30, ticker_code = get_data(clean_symbol)
+        df_d, df_60, df_30, ticker_obj = get_data(clean_symbol)
         
         if df_d is None or len(df_d) < 10:
             st.error(f"❌ 無法獲取 {clean_symbol} 資料。可能是新股上市未滿 10 天或代號錯誤。")
@@ -333,23 +401,20 @@ if run_btn:
             sar_val = today.get('SAR', np.inf) 
             
             # 1. KD 判斷
-            kd_gold_cross = (prev['K'] < prev['D']) and (today['K'] > today['D']) # 今日剛金叉
-            kd_is_bull = today['K'] > today['D'] # 目前呈現多方
+            kd_gold_cross = (prev['K'] < prev['D']) and (today['K'] > today['D']) 
+            kd_is_bull = today['K'] > today['D'] 
             check['kd_status'] = "今日金叉" if kd_gold_cross else ("多頭排列" if kd_is_bull else "空方")
             
             # 2. MACD 判斷
-            macd_flip = (prev['MACD_Hist'] <= 0 and today['MACD_Hist'] > 0) # 今日剛翻紅
-            macd_is_bull = today['MACD_Hist'] > 0 # 目前是紅柱
+            macd_flip = (prev['MACD_Hist'] <= 0 and today['MACD_Hist'] > 0) 
+            macd_is_bull = today['MACD_Hist'] > 0 
             check['macd_status'] = "今日翻紅" if macd_flip else ("紅柱延伸" if macd_is_bull else "綠柱整理")
             
             # 3. SAR 判斷
             sar_is_bull = today['Close'] > sar_val
             check['sar_status'] = "多方支撐" if sar_is_bull else "空方壓力"
 
-            # 綜合 SOP 判定
-            # 完美 SOP: 三個指標「目前」全都是多方
             check['is_perfect_sop'] = kd_is_bull and macd_is_bull and sar_is_bull
-            # 普通 SOP: 至少有兩個指標是多方，且今日有轉強訊號 (金叉或翻紅)
             check['is_sop_pass'] = (kd_is_bull or macd_is_bull) and sar_is_bull
             
             check['is_gulu'] = (today['K'] < 50) and (today['K'] > prev['K'])
@@ -364,6 +429,10 @@ if run_btn:
             check['is_buy_streak'] = 3 <= consecutive <= 10
 
             atr = df_d['ATR'].iloc[-1] if not pd.isna(df_d['ATR'].iloc[-1]) else today['Close']*0.02
+            
+            # 獲取基本面與除息資訊
+            fund_info = get_fundamental_info(ticker_obj, today['Close'], atr)
+
             targets = []
             for mult, win, atr_ratio in [(1.05, "85%", 0.5), (1.10, "65%", 0.4), (1.20, "40%", 0.3)]:
                 p = today['Close'] * mult
@@ -382,40 +451,22 @@ if run_btn:
             # --- 顯示層 ---
             st.subheader(f"📊 {clean_symbol} {stock_name} 全維度戰略報告")
             
-            # 新增：即時價格顯示區
-            c1, c2, c3 = st.columns([1, 1, 2])
             diff = today['Close'] - prev['Close']
             diff_pct = (diff / prev['Close']) * 100
-            c1.metric("目前股價", f"{today['Close']:.2f}", f"{diff:.2f} ({diff_pct:.2f}%)")
-            c2.metric("今日成交量", f"{int(today['Volume']/1000)} 張", f"量比 {check['vol_ratio']}")
+            price_cls = "price-up" if diff >= 0 else "price-down"
+            sign = "+" if diff >= 0 else ""
             
-            # 新增：SOP 細項檢測區
-            st.markdown("##### 🛠️ SOP 三線合一細項檢測 (日K)")
-            sop_col1, sop_col2, sop_col3, sop_col4 = st.columns(4)
-            
-            # KD 顯示
-            kd_color = "check-pass" if "多" in check['kd_status'] or "金叉" in check['kd_status'] else "check-fail"
-            sop_col1.markdown(f"**KD 指標**<br><span class='{kd_color}'>{check['kd_status']}</span><br><span style='font-size:12px'>K:{today['K']:.1f} / D:{today['D']:.1f}</span>", unsafe_allow_html=True)
-            
-            # MACD 顯示
-            macd_color = "check-pass" if "紅" in check['macd_status'] else "check-fail"
-            sop_col2.markdown(f"**MACD 指標**<br><span class='{macd_color}'>{check['macd_status']}</span><br><span style='font-size:12px'>Hist:{today['MACD_Hist']:.2f}</span>", unsafe_allow_html=True)
-            
-            # SAR 顯示
-            sar_color = "check-pass" if "多" in check['sar_status'] else "check-fail"
-            sop_col3.markdown(f"**SAR 指標**<br><span class='{sar_color}'>{check['sar_status']}</span><br><span style='font-size:12px'>價:{today['Close']:.1f} / SAR:{sar_val:.1f}</span>", unsafe_allow_html=True)
-
-            # 總結
-            if check['is_perfect_sop']:
-                sop_col4.markdown(f"**SOP 總結**<br><span class='check-pass'>🏆 完美多方</span>", unsafe_allow_html=True)
-            elif check['is_sop_pass']:
-                sop_col4.markdown(f"**SOP 總結**<br><span style='color:#ffc107; font-weight:bold'>⚡ 趨勢偏多</span>", unsafe_allow_html=True)
-            else:
-                sop_col4.markdown(f"**SOP 總結**<br><span class='check-fail'>❌ 條件未齊</span>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class='price-info'>
+                目前股價: <span class='{price_cls}' style='font-size:20px'>{today['Close']:.2f}</span> 
+                <span style='font-size:16px'>({sign}{diff:.2f} / {sign}{diff_pct:.2f}%)</span> &nbsp;|&nbsp; 
+                今日成交量: <b>{int(today['Volume']/1000)} 張</b> (量比 {check['vol_ratio']})
+            </div>
+            """, unsafe_allow_html=True)
 
             st.markdown(f"""
             <div class='ai-advice'>
-                <h4>🤖 AI 總司令戰略建議 (Personalized V25.4)</h4>
+                <h4>🤖 AI 總司令戰略建議 (Personalized V25.5)</h4>
                 {ai_advice}
             </div>
             """, unsafe_allow_html=True)
@@ -430,6 +481,26 @@ if run_btn:
             </div>
             """, unsafe_allow_html=True)
             
+            # --- 新增：基本面價值博弈區 ---
+            st.markdown(f"""
+            <div class='fundamental-zone'>
+                <h4>💎 價值博弈與股息 (Fundamental & Dividend)</h4>
+                <p><b>除息情報：</b></p>
+                <ul>
+                    <li>📅 <b>最近除息日：</b> {fund_info['ex_date_str']} ({fund_info['div_status']}) </li>
+                    <li>💵 <b>現金股利：</b> {fund_info['dividend']} 元</li>
+                    <li>⏳ <b>AI 預估填息時間：</b> {fund_info['fill_days']} 天 (依據 ATR 波動率推算，預計 {fund_info['est_fill_date']} 填息完成)</li>
+                </ul>
+                <hr style='border-top: 1px dashed #ff9800;'>
+                <p><b>合理股價 (Fair Value)：</b></p>
+                <ul>
+                    <li>📊 <b>EPS (近四季/預估)：</b> {fund_info['eps']} 元</li>
+                    <li>⚖️ <b>本益比合理區間 (15x-20x)：</b> {fund_info['fair_low']:.2f} ~ {fund_info['fair_high']:.2f} 元</li>
+                    <li>🎯 <b>法人目標價 (Target Price)：</b> 平均 {fund_info['target_mean']} (最高上看 {fund_info['target_high']})</li>
+                </ul>
+            </div>
+            """, unsafe_allow_html=True)
+
             st.markdown("---")
             st.markdown("#### 🌊 艾略特波浪微結構 (Micro-Structure)")
             wc1, wc2, wc3 = st.columns(3)
@@ -438,7 +509,18 @@ if run_btn:
             wc3.error(f"⚡ **30分K (轉折)**\n\n# {wave_30}")
             
             st.markdown("---")
-            st.markdown("#### 📏 均線特攻隊")
+            
+            # --- 修改：均線特攻隊 圖表化 ---
+            st.markdown("#### 📏 均線特攻隊 (MA Special Squad)")
+            
+            # 準備圖表資料
+            chart_cols = ['Close', 'SMA7', 'SMA22', 'SMA58']
+            chart_df = df_d[chart_cols].iloc[-100:].copy() # 取近100天
+            
+            # 使用 Streamlit 內建圖表繪製 (簡單直觀)
+            st.line_chart(chart_df, color=["#000000", "#FF0000", "#00FF00", "#0000FF"])
+            st.caption("黑色:股價 | 紅色:7MA(攻擊) | 綠色:22MA(生命) | 藍色:58MA(趨勢) ")
+
             cols = st.columns(6)
             ma_list = [7, 22, 34, 58, 116, 224]
             names = ["攻擊", "月線", "轉折", "季線", "半年", "年線"]
@@ -455,10 +537,9 @@ if run_btn:
             st.markdown("""
             <div class='strategy-note'>
             <b>⚔️ 均線戰略解讀：</b><br>
-            • <b>7MA (攻擊線)：</b> 短線噴出的關鍵，跌破代表攻擊暫停，適合極短線進出。<br>
-            • <b>22MA (月線/生命線)：</b> 波段多空的分界，主力護盤的第一道防線，站上偏多，跌破偏空。<br>
-            • <b>58MA (季線)：</b> 中期趨勢指標，法人建倉成本區，季線上彎助漲。<br>
-            • <b>116MA/224MA (半年/年線)：</b> 長線牛熊分界，跌破轉空，站上確認大趨勢翻多。
+            • <b>7MA (攻擊線)：</b> 紅色線，短線噴出的關鍵，K線在紅線上為極強勢。<br>
+            • <b>22MA (月線/生命線)：</b> 綠色線，主力護盤的第一道防線，跌破綠線需警戒。<br>
+            • <b>58MA (季線)：</b> 藍色線，中期趨勢指標，藍線上彎且股價在其上，為波段多頭。
             </div>
             """, unsafe_allow_html=True)
 
@@ -486,7 +567,7 @@ if run_btn:
                 st.caption(f"目前位置: {bb_pct*100:.1f}% (0%=下軌, 100%=上軌)")
 
             st.markdown("---")
-            st.markdown("#### ✅ 輔助條件檢核")
+            st.markdown("#### ✅ 輔助條件檢核 (含 SOP 掃描)")
             cc1, cc2 = st.columns(2)
             with cc1:
                 icon = "✅" if check['is_vol_surge'] else "❌"
@@ -494,11 +575,30 @@ if run_btn:
                 st.markdown(f"<div class='check-item'>🏦 觀察主力: {', '.join(check['main_force'])}</div>", unsafe_allow_html=True)
                 icon = "✅" if check['warrant_5m'] else "❌"
                 st.markdown(f"<div class='check-item'>{icon} 權證>3000萬</div>", unsafe_allow_html=True)
+                
+                # SOP 總結
+                if check['is_perfect_sop']:
+                    st.markdown(f"<div class='check-item'>🏆 <b>SOP 總結: 完美多方</b></div>", unsafe_allow_html=True)
+                elif check['is_sop_pass']:
+                    st.markdown(f"<div class='check-item'>⚡ <b>SOP 總結: 趨勢偏多</b></div>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div class='check-item'>❌ <b>SOP 總結: 條件未齊</b></div>", unsafe_allow_html=True)
+
             with cc2:
                 gulu = "✅" if check['is_gulu'] else "❌"
                 st.markdown(f"<div class='check-item'>📈 型態: 咕嚕 {gulu}</div>", unsafe_allow_html=True)
                 icon = "✅" if check['is_buy_streak'] else "❌"
                 st.markdown(f"<div class='check-item'>{icon} 連買: {check['consecutive']}天</div>", unsafe_allow_html=True)
+                
+                # SOP 細項
+                kd_icon = "✅" if "多" in check['kd_status'] or "金叉" in check['kd_status'] else "❌"
+                st.markdown(f"<div class='check-item'>{kd_icon} KD: {check['kd_status']}</div>", unsafe_allow_html=True)
+                
+                macd_icon = "✅" if "紅" in check['macd_status'] or "翻紅" in check['macd_status'] else "❌"
+                st.markdown(f"<div class='check-item'>{macd_icon} MACD: {check['macd_status']}</div>", unsafe_allow_html=True)
+                
+                sar_icon = "✅" if "多" in check['sar_status'] else "❌"
+                st.markdown(f"<div class='check-item'>{sar_icon} SAR: {check['sar_status']}</div>", unsafe_allow_html=True)
 
             st.markdown("---")
             st.markdown("#### 🎯 預測目標價 (含預估時間)")
@@ -506,5 +606,3 @@ if run_btn:
             tc1.metric("短線目標", f"{targets[0]['p']:.2f}", f"{targets[0]['w']} (約{targets[0]['days']}天)")
             tc2.metric("波段目標", f"{targets[1]['p']:.2f}", f"{targets[1]['w']} (約{targets[1]['days']}天)")
             tc3.metric("長線目標", f"{targets[2]['p']:.2f}", f"{targets[2]['w']} (約{targets[2]['days']}天)")
-            
-            st.line_chart(df_d['Close'])
