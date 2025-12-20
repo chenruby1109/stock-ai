@@ -31,14 +31,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.5 全能進化版)</p>', unsafe_allow_html=True)
+st.markdown('<p class="big-font">⚡ Miniko AI 戰略指揮室 (V25.6 實戰校正版)</p>', unsafe_allow_html=True)
 
 # --- 側邊欄 ---
 with st.sidebar:
     st.header("🔍 個股戰情室")
     stock_input = st.text_input("輸入代號 (如 2330)", value="2330")
     run_btn = st.button("🚀 啟動全維度分析", type="primary")
-    st.info("💡 V25.5 更新：新增均線圖表、EPS評價、除息預估填息日。")
+    st.info("💡 V25.6 更新：圖表優化(34MA生命線)、目標價時間校正。")
 
 # --- 1. 資料獲取 ---
 @st.cache_data(ttl=3600)
@@ -75,7 +75,6 @@ def get_data(symbol):
                     df_30m = ticker.history(period="1mo", interval="30m")
                 except:
                     df_60m, df_30m = None, None
-                # 回傳 ticker 物件以便獲取基本面資料
                 return df_d, df_60m, df_30m, ticker 
         except:
             continue
@@ -94,8 +93,6 @@ def get_fundamental_info(ticker, close_price, atr):
         if ex_date:
             ex_dt = datetime.fromtimestamp(ex_date).date()
             info['ex_date_str'] = ex_dt.strftime('%Y-%m-%d')
-            
-            # 判斷是否已除息
             if ex_dt > datetime.now().date():
                 info['div_status'] = "即將除息 (股價將修正)"
             else:
@@ -104,12 +101,10 @@ def get_fundamental_info(ticker, close_price, atr):
             info['ex_date_str'] = "尚未公告 / 無數據"
             info['div_status'] = "N/A"
 
-        # 預估填息日：利用股息 / ATR (平均每日波動)
+        # 預估填息日
         if dividend and dividend > 0 and atr > 0:
             days_to_fill = int(dividend / atr)
-            # 如果波動太小，天數會過大，設定上限顯示
             days_display = days_to_fill if days_to_fill < 100 else "需長期抗戰"
-            
             fill_date = datetime.now().date() + timedelta(days=days_to_fill)
             info['fill_days'] = days_display
             info['est_fill_date'] = fill_date.strftime('%Y-%m-%d') if isinstance(days_display, int) else "N/A"
@@ -123,14 +118,12 @@ def get_fundamental_info(ticker, close_price, atr):
         info['eps'] = t_info.get('trailingEps', None)
         if info['eps'] is None: info['eps'] = t_info.get('forwardEps', 0)
         
-        # 法人目標價
         info['target_mean'] = t_info.get('targetMeanPrice', 'N/A')
         info['target_high'] = t_info.get('targetHighPrice', 'N/A')
         
-        # 計算合理區間 (若無資料則用簡易本益比推估)
         if info['eps'] and info['eps'] > 0:
-            info['fair_low'] = info['eps'] * 15  # 保守 PE 15
-            info['fair_high'] = info['eps'] * 20 # 積極 PE 20
+            info['fair_low'] = info['eps'] * 15 
+            info['fair_high'] = info['eps'] * 20
         else:
             info['fair_low'] = 0
             info['fair_high'] = 0
@@ -434,12 +427,19 @@ if run_btn:
             fund_info = get_fundamental_info(ticker_obj, today['Close'], atr)
 
             targets = []
+            # 修改：時間預估邏輯，加入市場摩擦係數 (Reality Factor = 2.5)
+            # 公式：(距離 / 每日波動) * 係數 -> 讓時間變長，更保守
+            reality_factor = 2.5
             for mult, win, atr_ratio in [(1.05, "85%", 0.5), (1.10, "65%", 0.4), (1.20, "40%", 0.3)]:
                 p = today['Close'] * mult
                 dist = p - today['Close']
                 daily_move = atr * atr_ratio
-                days = max(2, int(dist / daily_move)) if daily_move > 0 else 10
-                targets.append({"p": p, "w": win, "days": days})
+                
+                # 計算基礎天數，並乘上摩擦係數
+                raw_days = dist / daily_move if daily_move > 0 else 5
+                adjusted_days = max(5, int(raw_days * reality_factor)) 
+                
+                targets.append({"p": p, "w": win, "days": adjusted_days})
 
             ma5 = today['MA5'] if 'MA5' in today and not pd.isna(today['MA5']) else fib['0.200']
             ma20 = today['MA20'] if 'MA20' in today and not pd.isna(today['MA20']) else fib['0.382']
@@ -466,7 +466,7 @@ if run_btn:
 
             st.markdown(f"""
             <div class='ai-advice'>
-                <h4>🤖 AI 總司令戰略建議 (Personalized V25.5)</h4>
+                <h4>🤖 AI 總司令戰略建議 (Personalized V25.6)</h4>
                 {ai_advice}
             </div>
             """, unsafe_allow_html=True)
@@ -510,20 +510,24 @@ if run_btn:
             
             st.markdown("---")
             
-            # --- 修改：均線特攻隊 圖表化 ---
+            # --- 修改：均線特攻隊 圖表化與定義更新 ---
             st.markdown("#### 📏 均線特攻隊 (MA Special Squad)")
             
-            # 準備圖表資料
-            chart_cols = ['Close', 'SMA7', 'SMA22', 'SMA58']
-            chart_df = df_d[chart_cols].iloc[-100:].copy() # 取近100天
-            
-            # 使用 Streamlit 內建圖表繪製 (簡單直觀)
-            st.line_chart(chart_df, color=["#000000", "#FF0000", "#00FF00", "#0000FF"])
-            st.caption("黑色:股價 | 紅色:7MA(攻擊) | 綠色:22MA(生命) | 藍色:58MA(趨勢) ")
+            # 1. 整理圖表數據：只取最近 60 天，避免線條擠壓
+            # 2. 指定需要的欄位，只畫重要的線 (7, 34, 58) 
 
+[Image of moving average crossover]
+
+            chart_cols = ['Close', 'SMA7', 'SMA34', 'SMA58']
+            chart_df = df_d[chart_cols].iloc[-60:].copy() 
+            
+            st.line_chart(chart_df, color=["#000000", "#FF0000", "#00AA00", "#0000FF"])
+            st.caption("黑色:股價 | 紅色:7MA(攻擊) | 綠色:34MA(生命線) | 藍色:58MA(季線)")
+
+            # 更新 Metrics 定義：34MA 為生命線
             cols = st.columns(6)
             ma_list = [7, 22, 34, 58, 116, 224]
-            names = ["攻擊", "月線", "轉折", "季線", "半年", "年線"]
+            names = ["攻擊", "輔助", "生命", "季線", "半年", "年線"]
             for i, ma in enumerate(ma_list):
                 val = today.get(f'SMA{ma}', np.nan)
                 if pd.isna(val):
@@ -536,9 +540,9 @@ if run_btn:
 
             st.markdown("""
             <div class='strategy-note'>
-            <b>⚔️ 均線戰略解讀：</b><br>
+            <b>⚔️ 均線戰略解讀 (V25.6)：</b><br>
             • <b>7MA (攻擊線)：</b> 紅色線，短線噴出的關鍵，K線在紅線上為極強勢。<br>
-            • <b>22MA (月線/生命線)：</b> 綠色線，主力護盤的第一道防線，跌破綠線需警戒。<br>
+            • <b>34MA (生命線)：</b> 綠色線，費波那契關鍵數，主力波段護盤的核心防線，跌破需高度警戒。<br>
             • <b>58MA (季線)：</b> 藍色線，中期趨勢指標，藍線上彎且股價在其上，為波段多頭。
             </div>
             """, unsafe_allow_html=True)
@@ -603,6 +607,7 @@ if run_btn:
             st.markdown("---")
             st.markdown("#### 🎯 預測目標價 (含預估時間)")
             tc1, tc2, tc3 = st.columns(3)
-            tc1.metric("短線目標", f"{targets[0]['p']:.2f}", f"{targets[0]['w']} (約{targets[0]['days']}天)")
-            tc2.metric("波段目標", f"{targets[1]['p']:.2f}", f"{targets[1]['w']} (約{targets[1]['days']}天)")
-            tc3.metric("長線目標", f"{targets[2]['p']:.2f}", f"{targets[2]['w']} (約{targets[2]['days']}天)")
+            # 已在上方 logic 加入 Reality Factor = 2.5
+            tc1.metric("短線目標", f"{targets[0]['p']:.2f}", f"{targets[0]['w']} (保守{targets[0]['days']}天)")
+            tc2.metric("波段目標", f"{targets[1]['p']:.2f}", f"{targets[1]['w']} (保守{targets[1]['days']}天)")
+            tc3.metric("長線目標", f"{targets[2]['p']:.2f}", f"{targets[2]['w']} (保守{targets[2]['days']}天)")
