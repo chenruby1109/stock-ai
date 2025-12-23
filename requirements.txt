@@ -15,3 +15,11 @@ yfinance
 pandas
 requests
 lxml
+streamlit
+yfinance
+pandas
+numpy
+requests
+scipy
+lxml
+html5lib
