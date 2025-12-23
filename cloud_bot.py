@@ -173,21 +173,21 @@ def analyze_strategy(df):
 # ==========================================
 def run_monitor():
     print("👀 Miniko 盤中哨兵模式啟動 (已校正 UTC+8)...")
-    print("🚀 功能更新: [09:30 開盤] + [10:20/12:00 戰報] + [13:36 收盤] + [18:40 總結]")
+    print("🚀 功能更新: [09:30 開盤] + [10:20/12:00 戰報(含訊號)] + [13:36 收盤] + [18:40 總結]")
     
     # 🔥🔥🔥 測試通知 🔥🔥🔥
-    send_telegram("🚀 Miniko 系統連線測試成功！已更新時刻表：\n1. 09:30 開盤衝鋒掃描\n2. 13:36 收盤定心丸\n3. 18:40 盤後籌碼AI總結")
+    send_telegram("🚀 Miniko 系統連線測試成功！已更新時刻表：\n1. 09:30 開盤衝鋒掃描\n2. 10:20/12:00 戰略+訊號回報\n3. 13:36 收盤定心丸\n4. 18:40 盤後籌碼AI總結")
     
     alert_history = {} 
     
     # ⏰ 設定排程時間表
     schedule_tasks = {
-        "09:30": "morning_scan",   # ✨ 新增：早上開盤全部訊號
-        "10:20": "strategy",
-        "12:00": "strategy",
-        "13:36": "closing",        # ✨ 修改：改成 13:36 抓最新收盤價
-        "17:01": "chips_mtf",      # 原有的多週期分析
-        "18:40": "evening_summary" # ✨ 新增：盤後關鍵籌碼與AI總建議
+        "09:30": "morning_scan",   # 09:30 開盤掃描
+        "10:20": "strategy",       # 10:20 戰略+訊號
+        "12:00": "strategy",       # 12:00 戰略+訊號
+        "13:36": "closing",        # 13:36 收盤
+        "17:01": "chips_mtf",      # 17:01 多週期
+        "18:40": "evening_summary" # 18:40 盤後總結
     }
     # 初始化發送狀態
     scheduled_report_sent = {t: False for t in schedule_tasks}
@@ -201,10 +201,10 @@ def run_monitor():
         # 2. 定義時段狀態
         is_working_day = (0 <= weekday <= 4)
         
-        # 機器人清醒時間 (08:50 ~ 19:00) -> 延長到 19:00 以包含 18:40 的報告
+        # 機器人清醒時間 (08:50 ~ 19:00) 
         is_active_hours = is_working_day and (8 <= now_tw.hour <= 19)
         
-        # 盤中交易時間 (09:00 ~ 13:30) - 只有這時候會掃描突發訊號
+        # 盤中交易時間 (09:00 ~ 13:30)
         is_trading_hours = is_working_day and (
             (now_tw.hour == 9) or 
             (now_tw.hour > 9 and now_tw.hour < 13) or 
@@ -234,7 +234,7 @@ def run_monitor():
             if report_type == "morning_scan":
                 report_content = f"🌅 <b>Miniko 09:30 開盤衝鋒掃描</b> 🌅\n<i>(早盤多空力道確認)</i>\n\n"
             elif report_type == "strategy":
-                report_content = f"🔔 <b>Miniko {now_str} 盤中戰略推演</b> 🔔\n\n"
+                report_content = f"🔔 <b>Miniko {now_str} 盤中戰略與訊號</b> 🔔\n\n"
             elif report_type == "closing":
                 report_content = f"🌇 <b>Miniko 13:36 收盤定心丸</b> 🌇\n<i>(收盤價已確認更新)</i>\n\n"
             elif report_type == "chips_mtf":
@@ -259,7 +259,7 @@ def run_monitor():
                     
                     report_content += f"<b>📌 {name} ({code})</b> {icon} {today['Close']}\n"
                     
-                    # === 09:30 開盤掃描 (看即時訊號 + 量能) ===
+                    # === 09:30 開盤掃描 ===
                     if report_type == "morning_scan":
                         signals = check_conditions(df_day, code, name)
                         vol_ratio = today['Volume'] / prev['Volume'] if prev['Volume'] > 0 else 0
@@ -270,14 +270,22 @@ def run_monitor():
                         else:
                             report_content += f"⚡ 狀態: 觀察中，無特殊訊號\n"
 
-                    # === 10:20 & 12:00 盤中戰略 ===
+                    # === 10:20 & 12:00 盤中戰略 (修正：補回訊號偵測) ===
                     elif report_type == "strategy":
                         strat = analyze_strategy(df_day)
+                        # ⬇️ 這裡補回來了！會檢查訊號 ⬇️
+                        signals = check_conditions(df_day, code, name)
+                        
                         report_content += f"🛒 建議買點: {strat['buy_agg']:.1f}(激) / {strat['buy_con']:.1f}(穩)\n"
                         report_content += f"🎲 預估勝率: {strat['win_rate']}%\n"
-                        report_content += f"🌊 目前趨勢: {'多頭' if today['Close']>today['MA20'] else '整理/空頭'}\n"
+                        
+                        # 顯示訊號
+                        if signals:
+                            report_content += f"⚡ 觸發訊號: {' | '.join(signals)}\n"
+                        else:
+                            report_content += f"⚡ 訊號狀態: 暫無特殊訊號\n"
 
-                    # === 13:36 收盤建議 (修正時間版) ===
+                    # === 13:36 收盤建議 ===
                     elif report_type == "closing":
                         strat = analyze_strategy(df_day)
                         report_content += f"💰 <b>最終收盤: {today['Close']} ({pct:+.2f}%)</b>\n"
@@ -294,12 +302,12 @@ def run_monitor():
 
                     # === 18:40 盤後籌碼與AI總建議 ===
                     elif report_type == "evening_summary":
-                        # 1. 籌碼推估 (因為無法抓分點，用價量結構推估主力)
+                        # 1. 籌碼推估
                         vol_status = "量增價漲(主力進場)" if (today['Volume'] > today['Vol_MA5'] and today['Close'] > prev['Close']) else \
                                      "量縮整理(主力惜售)" if (today['Volume'] < today['Vol_MA5'] and abs(pct) < 1) else \
                                      "出貨跡象" if (today['Volume'] > today['Vol_MA5'] and pct < -1) else "中性"
                         
-                        # 2. 週線趨勢 (大戶方向)
+                        # 2. 週線趨勢
                         df_week = get_data(code, period="2y", interval="1wk")
                         df_week = calc_indicators(df_week)
                         wk_trend = "長線多頭" if df_week.iloc[-1]['Close'] > df_week.iloc[-1]['MA20'] else "長線保守"
